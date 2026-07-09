@@ -10,7 +10,6 @@ import 'package:PiliPlus/pages/setting/widgets/ordered_multi_select_dialog.dart'
 import 'package:PiliPlus/pages/setting/widgets/select_dialog.dart';
 import 'package:PiliPlus/plugin/pl_player/models/audio_output_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/hwdec_type.dart';
-import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/filtering_text.dart';
 import 'package:PiliPlus/utils/storage.dart';
 import 'package:PiliPlus/utils/storage_key.dart';
@@ -19,7 +18,6 @@ import 'package:PiliPlus/utils/video_utils.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show FilteringTextInputFormatter;
-import 'package:flutter_displaymode/flutter_displaymode.dart';
 import 'package:flutter_smart_dialog/flutter_smart_dialog.dart';
 import 'package:get/get.dart';
 import 'package:material_design_icons_flutter/material_design_icons_flutter.dart';
@@ -32,21 +30,6 @@ List<SettingsModel> get videoSettings => [
     setKey: SettingBoxKey.enableHA,
     defaultVal: true,
   ),
-  if (Platform.isAndroid)
-    SwitchModel(
-      title: 'Android 17/Tensor 省电刷新率',
-      subtitle: '限制本应用以 60Hz 渲染，降低 Pixel/Tensor 发热；关闭后恢复系统自动刷新率',
-      leading: const Icon(Icons.battery_saver_outlined),
-      setKey: SettingBoxKey.androidPowerSaveMode,
-      defaultVal: Pref.androidPowerSaveMode,
-      onChanged: (value) {
-        PiliAndroidHelper.setPowerSaveRefreshRate(value);
-        if (!value) {
-          GStorage.setting.delete(SettingBoxKey.displayMode);
-          FlutterDisplayMode.setPreferredMode(DisplayMode.auto);
-        }
-      },
-    ),
   const SwitchModel(
     title: '免登录1080P',
     subtitle: '免登录查看1080P视频',

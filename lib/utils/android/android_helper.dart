@@ -93,6 +93,13 @@ abstract final class PiliAndroidHelper {
     } catch (_) {}
   }
 
+  /// 切换应用图标：true=国际版 bilibili，false=原版 PiliPlus。
+  static Future<void> setAppIcon(bool bilibili) async {
+    try {
+      await _channel.invokeMethod('setAppIcon', bilibili);
+    } catch (_) {}
+  }
+
   @pragma('vm:prefer-inline')
   static void back() => AndroidHelper.back();
 

@@ -94,6 +94,30 @@ public final class AndroidHelper {
         getContext().startActivity(intent);
     }
 
+    /**
+     * 切换应用图标：启用目标 activity-alias，禁用另一个。
+     * 先启用再禁用，保证任意时刻至少有一个 launcher 入口。
+     */
+    public static void setAppIcon(boolean bilibili) {
+        Context context = getContext();
+        PackageManager pm = context.getPackageManager();
+        String pkg = context.getPackageName();
+        ComponentName biliAlias = new ComponentName(pkg, "com.example.piliplus.MainActivityBilibili");
+        ComponentName piliAlias = new ComponentName(pkg, "com.example.piliplus.MainActivityPiliPlus");
+        ComponentName enable = bilibili ? biliAlias : piliAlias;
+        ComponentName disable = bilibili ? piliAlias : biliAlias;
+        pm.setComponentEnabledSetting(
+                enable,
+                PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                PackageManager.DONT_KILL_APP
+        );
+        pm.setComponentEnabledSetting(
+                disable,
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
+                PackageManager.DONT_KILL_APP
+        );
+    }
+
     public static void biliSendCommAntifraud(
             int action, long oid, int type, long rpId, long root, long parent, long ctime, @NonNull String commentText,
             String pictures, @NonNull String sourceId, long uid, @NonNull String cookie

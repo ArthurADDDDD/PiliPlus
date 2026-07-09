@@ -61,6 +61,10 @@ class MainActivity : AudioServiceActivity() {
                     android.util.Log.i("PipShellDart", call.arguments?.toString() ?: "")
                     result.success(null)
                 }
+                "setAppIcon" -> {
+                    AndroidHelper.setAppIcon((call.arguments as? Boolean) ?: true)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         }

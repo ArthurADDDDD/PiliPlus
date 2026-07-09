@@ -42,6 +42,11 @@ class _SettingPageState extends State<SettingPage> {
 
   static const List<_SettingsModel> _items = [
     _SettingsModel(
+      type: SettingType.forkSetting,
+      subtitle: '本 fork 新增：返回键原生画中画、小窗、滑动调节、省电刷新率',
+      icon: Icon(Icons.tune),
+    ),
+    _SettingsModel(
       type: SettingType.privacySetting,
       subtitle: '黑名单',
       icon: Icon(Icons.privacy_tip_outlined),
@@ -113,6 +118,7 @@ class _SettingPageState extends State<SettingPage> {
                   Expanded(
                     flex: 6,
                     child: switch (_type) {
+                      .forkSetting ||
                       .privacySetting ||
                       .recommendSetting ||
                       .videoSetting ||
@@ -144,6 +150,7 @@ class _SettingPageState extends State<SettingPage> {
     if (_isPortrait) {
       Get.to(
         () => switch (type) {
+          .forkSetting ||
           .privacySetting ||
           .recommendSetting ||
           .videoSetting ||

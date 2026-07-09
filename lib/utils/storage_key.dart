@@ -128,6 +128,7 @@ abstract final class SettingBoxKey {
       darkVideoPage = 'darkVideoPage',
       enableSlideVolumeBrightness = 'enableSlideVolumeBrightness',
       legacySlideAdjust = 'legacySlideAdjust',
+      appIconType = 'appIconType',
       enableSlideFS = 'enableSlideFS',
       retryCount = 'retryCount',
       retryDelay = 'retryDelay',

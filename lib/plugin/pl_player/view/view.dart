@@ -1127,13 +1127,16 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             .clamp(0.0, 1.0);
         setBrightness(brightness);
       } else {
-        // 相对起点：全程约 0.75×高度的滑动 = 满量程，跟手且不漂移
-        final double range = maxHeight * 0.75;
+        // 相对起点 + gamma 感知曲线：在 gamma 空间做线性位移，
+        // 暗处更细腻（对应亮度值→感知亮度的非线性），接近原版丝滑手感。
+        const double gamma = 2.2;
+        final double range = maxHeight * 0.9;
         final double totalDy = details.localFocalPoint.dy - _slideStartDy;
-        final double brightness = (_slideStartValue - totalDy / range).clamp(
-          0.0,
-          1.0,
-        );
+        final double startG = math
+            .pow(_slideStartValue.clamp(0.0, 1.0), 1 / gamma)
+            .toDouble();
+        final double g = (startG - totalDy / range).clamp(0.0, 1.0);
+        final double brightness = math.pow(g, gamma).toDouble();
         setBrightness(brightness);
       }
     } else if (_gestureType == .center) {

@@ -4,6 +4,7 @@ import 'package:PiliPlus/common/widgets/gesture/horizontal_drag_gesture_recogniz
     show deviceTouchSlop;
 import 'package:PiliPlus/common/widgets/pair.dart';
 import 'package:PiliPlus/http/constants.dart';
+import 'package:PiliPlus/models/common/app_icon_type.dart';
 import 'package:PiliPlus/models/common/bar_hide_type.dart';
 import 'package:PiliPlus/models/common/dynamic/dynamic_badge_mode.dart';
 import 'package:PiliPlus/models/common/dynamic/dynamics_type.dart';
@@ -658,6 +659,12 @@ abstract final class Pref {
   // false = 新版（相对起点映射，接近原版 B 站，默认）；true = 旧版逐帧累加
   static bool get legacySlideAdjust =>
       _setting.get(SettingBoxKey.legacySlideAdjust, defaultValue: false);
+
+  // 应用图标：默认国际版 bilibili（与 manifest 默认启用的 alias 一致）
+  static AppIconType get appIconType => AppIconType.values[_setting.get(
+    SettingBoxKey.appIconType,
+    defaultValue: AppIconType.bilibili.index,
+  )];
 
   static bool get enableSlideFS =>
       _setting.get(SettingBoxKey.enableSlideFS, defaultValue: true);
