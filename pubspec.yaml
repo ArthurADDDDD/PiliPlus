@@ -215,10 +215,9 @@ dependency_overrides:
       path: media_kit_native_event_loop
       ref: version_1.2.5
   media_kit_video:
-    git:
-      url: https://github.com/My-Responsitories/media-kit.git
-      path: media_kit_video
-      ref: version_1.2.5
+    # 本地维护：AndroidVideoController 增加外部 surface（原生 PiP 壳）挂起开关
+    # 来源 https://github.com/My-Responsitories/media-kit.git ref version_1.2.5
+    path: third_party/media_kit_video
   cached_network_image_ce:
     git:
       url: https://github.com/My-Responsitories/flutter_cached_network_image_ce.git

@@ -29,6 +29,8 @@ import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/video_fit_type.dart';
+import 'package:PiliPlus/plugin/pl_player/mini_player.dart';
+import 'package:PiliPlus/plugin/pl_player/pip_shell.dart';
 import 'package:PiliPlus/plugin/pl_player/utils/fullscreen.dart';
 import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/accounts.dart';
@@ -261,6 +263,10 @@ class PlPlayerController with BlockConfigMixin {
   bool get isAutoEnterPip => _isAutoEnterPip;
 
   static bool get _isCurrVideoPage {
+    if (MiniVideoPlayer.active) {
+      // 应用内小窗播放中，任意页面都允许系统 PiP
+      return true;
+    }
     final routing = Get.routing;
     if (routing.route is! GetPageRoute) {
       return false;
@@ -288,6 +294,16 @@ class PlPlayerController with BlockConfigMixin {
   void _disableAutoEnterPip() {
     if (_isAutoEnterPip) {
       PiliAndroidHelper.disableAutoEnterPip();
+      _isAutoEnterPip = false;
+    }
+  }
+
+  void _enableAutoEnterPip() {
+    if (Platform.isAndroid &&
+        autoPiP &&
+        DeviceUtils.sdkInt >= 31 &&
+        !_isAutoEnterPip) {
+      _isAutoEnterPip = true;
     }
   }
 
@@ -325,6 +341,7 @@ class PlPlayerController with BlockConfigMixin {
   late final enableShrinkVideoSize = Pref.enableShrinkVideoSize;
   late final darkVideoPage = Pref.darkVideoPage;
   late final enableSlideVolumeBrightness = Pref.enableSlideVolumeBrightness;
+  late final legacySlideAdjust = Pref.legacySlideAdjust;
   late final enableSlideFS = Pref.enableSlideFS;
   late final enableDragSubtitle = Pref.enableDragSubtitle;
   late final fastForBackwardDuration = Duration(
@@ -544,7 +561,7 @@ class PlPlayerController with BlockConfigMixin {
           $Runnable(run: _onUserLeaveHint),
         );
       } else {
-        _isAutoEnterPip = true;
+        _enableAutoEnterPip();
       }
     }
   }
@@ -557,10 +574,28 @@ class PlPlayerController with BlockConfigMixin {
 
   // 获取实例 传参
   static PlPlayerController getInstance({bool isLive = false}) {
+    // 新页面接管播放时，应用内小窗/原生 PiP 壳退场
+    MiniVideoPlayer.hide();
+    PipShell.hide();
     // 如果实例尚未创建，则创建一个新实例
     return (_instance ??= PlPlayerController._())
       ..isLive = isLive
+      .._detachedToMiniPlayer = false
       .._playerCount += 1;
+  }
+
+  // 应用内小窗（返回键小窗播放）
+  bool _detachedToMiniPlayer = false;
+  bool get detachedToMiniPlayer => _detachedToMiniPlayer;
+  int get playerCount => _playerCount;
+
+  /// 视频页返回时把播放器交给应用内小窗：
+  /// 页面照常 pop/dispose，但播放器实例继续存活。
+  void detachToMiniPlayer() {
+    _detachedToMiniPlayer = true;
+    _playerCount = 0;
+    // 页面退场后媒体会话的播放指令直接作用于实例
+    setPlayCallBack(play);
   }
 
   bool _processing = false;
@@ -905,6 +940,7 @@ class PlPlayerController with BlockConfigMixin {
       stream.playing.listen((bool playing) {
         WakelockPlus.toggle(enable: playing);
         if (playing) {
+          _enableAutoEnterPip();
           if (_isAutoEnterPip) {
             if (_isCurrVideoPage) {
               enterPip(autoEnter: true);
@@ -1707,6 +1743,14 @@ class PlPlayerController with BlockConfigMixin {
 
   void onPopInvokedWithResult(bool didPop, Object? result) {
     if (didPop) {
+      if (_detachedToMiniPlayer) {
+        // 播放器交由应用内小窗接管：不暂停、保留自动进入系统 PiP
+        if (Platform.isAndroid && !setSystemBrightness) {
+          ScreenBrightnessPlatform.instance.resetApplicationScreenBrightness();
+        }
+        return;
+      }
+
       if (playerStatus.isPlaying) {
         pause();
       }

@@ -51,6 +51,7 @@ import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/services/shutdown_timer_service.dart'
     show shutdownTimerService;
 import 'package:PiliPlus/utils/accounts.dart';
+import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/extension/scroll_controller_ext.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
@@ -129,6 +130,8 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   final videoReplyPanelKey = GlobalKey();
   final videoRelatedKey = GlobalKey();
   final videoIntroKey = GlobalKey();
+  void Function(bool)? _androidPipModeChanged;
+  bool _isInAndroidPip = false;
 
   @override
   void initState() {
@@ -136,6 +139,11 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
 
     PlPlayerController.setPlayCallBack(playCallBack);
     videoDetailController = Get.put(VideoDetailController(), tag: heroTag);
+    if (Platform.isAndroid) {
+      _androidPipModeChanged = _handleAndroidPipModeChanged;
+      PiliAndroidHelper.ensureMethodChannel();
+      PiliAndroidHelper.onPictureInPictureModeChanged = _androidPipModeChanged;
+    }
 
     if (videoDetailController.removeSafeArea) {
       hideSystemBar();
@@ -191,8 +199,27 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
       }
     } else if (state == .paused) {
       introController.cancelTimer();
-      ctr.showDanmaku = false;
+      ctr.showDanmaku =
+          Platform.isAndroid && (_isInAndroidPip || AndroidHelper.isPipMode);
     }
+  }
+
+  void _handleAndroidPipModeChanged(bool isInPip) {
+    if (!mounted) {
+      return;
+    }
+    _isInAndroidPip = isInPip;
+    final ctr = videoDetailController.plPlayerController;
+    if (isInPip) {
+      introController.cancelTimer();
+      ctr
+        ..controls = false
+        ..showDanmaku = true;
+    } else if (!ctr.showDanmaku) {
+      introController.startTimer();
+      ctr.showDanmaku = true;
+    }
+    setState(() {});
   }
 
   Future<void>? playCallBack() {
@@ -345,15 +372,24 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     }
 
     if (!videoDetailController.plPlayerController.isCloseAll) {
-      videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
-      if (plPlayerController != null) {
-        videoDetailController.makeHeartBeat();
-        plPlayerController!.dispose();
+      if (videoDetailController.plPlayerController.detachedToMiniPlayer) {
+        // 播放器已交给应用内小窗：保留播放器与媒体会话
       } else {
-        PlPlayerController.updatePlayCount();
+        videoPlayerServiceHandler?.onVideoDetailDispose(heroTag);
+        if (plPlayerController != null) {
+          videoDetailController.makeHeartBeat();
+          plPlayerController!.dispose();
+        } else {
+          PlPlayerController.updatePlayCount();
+        }
       }
     }
     removeObserverMobile(this);
+    if (Platform.isAndroid &&
+        PiliAndroidHelper.onPictureInPictureModeChanged ==
+            _androidPipModeChanged) {
+      PiliAndroidHelper.onPictureInPictureModeChanged = null;
+    }
 
     super.dispose();
   }
@@ -1219,8 +1255,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
         !isFullScreen &&
         !videoDetailController.plPlayerController.isDesktopPip &&
         (videoDetailController.horizontalScreen || isPortrait),
-    onPopInvokedWithResult:
-        videoDetailController.plPlayerController.onPopInvokedWithResult,
+    onPopInvokedWithResult: videoDetailController.onPopInvokedWithResult,
     child: Obx(
       () =>
           !videoDetailController.videoState.value ||

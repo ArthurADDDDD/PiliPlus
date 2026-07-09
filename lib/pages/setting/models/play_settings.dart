@@ -12,6 +12,7 @@ import 'package:PiliPlus/plugin/pl_player/models/bottom_progress_behavior.dart';
 import 'package:PiliPlus/plugin/pl_player/models/fullscreen_mode.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_repeat.dart';
 import 'package:PiliPlus/services/service_locator.dart';
+import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/extension/num_ext.dart';
 import 'package:PiliPlus/utils/platform_utils.dart';
 import 'package:PiliPlus/utils/storage.dart';
@@ -88,6 +89,13 @@ List<SettingsModel> get playSettings => [
     leading: Icon(MdiIcons.tuneVerticalVariant),
     setKey: SettingBoxKey.enableSlideVolumeBrightness,
     defaultVal: true,
+  ),
+  const SwitchModel(
+    title: '使用旧版滑动调节',
+    subtitle: '默认使用接近原版 B 站的相对调节（更跟手、更准）；开启则回到旧版逐帧累加调节',
+    leading: Icon(Icons.swipe_vertical_outlined),
+    setKey: SettingBoxKey.legacySlideAdjust,
+    defaultVal: false,
   ),
   if (Platform.isAndroid)
     const SwitchModel(
@@ -217,12 +225,34 @@ List<SettingsModel> get playSettings => [
       subtitle: '进入后台时以小窗形式（PiP）播放',
       leading: const Icon(Icons.picture_in_picture_outlined),
       setKey: SettingBoxKey.autoPiP,
-      defaultVal: false,
+      defaultVal: true,
       onChanged: (val) {
         if (val && !videoPlayerServiceHandler!.enableBackgroundPlay) {
           SmartDialog.showToast('建议开启后台音频服务');
         }
       },
+    ),
+    const SwitchModel(
+      title: '返回键进入原生画中画',
+      subtitle: '视频播放中按返回键，回到上一页并以系统原生画中画继续播放（画中画内不显示弹幕）',
+      leading: Icon(Icons.picture_in_picture_alt_outlined),
+      setKey: SettingBoxKey.pipOnBackNative,
+      defaultVal: true,
+    ),
+    const SwitchModel(
+      title: '返回时小窗播放',
+      subtitle: '上一项关闭时生效：返回后以应用内小窗继续播放（可显示弹幕）',
+      leading: Icon(Icons.branding_watermark_outlined),
+      setKey: SettingBoxKey.miniPlayerOnBack,
+      defaultVal: false,
+    ),
+    const SwitchModel(
+      title: '关闭画中画时暂停',
+      subtitle: '将系统 PiP（回桌面或返回键触发）拖到关闭区域后，停止播放\n提示：PiP 窗口大小由系统记忆上次捏合缩放的结果，无法在应用内预设',
+      leading: Icon(Icons.pause_presentation_outlined),
+      setKey: SettingBoxKey.pauseOnPipDismiss,
+      defaultVal: true,
+      onChanged: PiliAndroidHelper.setPauseOnPipDismiss,
     ),
     const SwitchModel(
       title: '画中画不加载弹幕',

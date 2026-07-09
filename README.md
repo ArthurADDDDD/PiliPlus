@@ -1,253 +1,75 @@
-<div align="center">
-    <img width="200" height="200" src="assets/images/logo/logo.png">
-</div>
+# PiliPlus · Pixel/Tensor 个人优化版
 
+面向个人使用的 PiliPlus fork，主要在 Pixel 10 Pro / Android 17（API 37）/ Tensor 平台上做发热耗电优化、系统原生画中画、以及一些播放交互的打磨。保留 Bilibili 的完整日常体验，不做大规模阉割，SponsorBlock / 空降助手继续可用。
 
+- **基于**：上游 [PiliPlus](https://github.com/bggRGjQaUbCoE/PiliPlus) `v2.0.9+1`（commit `90eee40f9` “flutter 3.44.5”）。
+- **上游原版 README** 已归档到 [docs/archive/README.upstream.md](docs/archive/README.upstream.md)。
+- **详细逐轮改动**见 [UPDATE.md](UPDATE.md)，待办与限制见 [TODO.md](TODO.md)。
 
-<div align="center">
-    <h1>PiliPlus</h1>
-<div align="center">
-    
-![GitHub repo size](https://img.shields.io/github/repo-size/bggRGjQaUbCoE/PiliPlus) 
-![GitHub Repo stars](https://img.shields.io/github/stars/bggRGjQaUbCoE/PiliPlus) 
-![GitHub all releases](https://img.shields.io/github/downloads/bggRGjQaUbCoE/PiliPlus/total) 
-</div>
-    <p>使用Flutter开发的BiliBili第三方客户端</p>
-    
-<img src="assets/screenshots/510shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/174shots_so.png" width="32%" alt="home" />
-<img src="assets/screenshots/850shots_so.png" width="32%" alt="home" />
-<br/>
-<img src="assets/screenshots/main_screen.png" width="96%" alt="home" />
-<br/>
-</div>
+## 相比上游改了什么
 
+### 1. 返回键系统原生画中画（本 fork 核心）
 
-<br/>
+按返回键让视频以**系统原生 PiP** 继续播放，同时回到 PiliPlus 的上一页——且不露出上一个 app。
 
-## 适配平台
+- 单 `MainActivity` 无法让系统 PiP 盖在本 app 的上一页之上（PiP 是 Activity 级能力）。方案是新增独立的原生 **`PipActivity`** 作为 PiP 壳，把 libmpv 的视频输出 surface 从 Flutter 纹理**热切换**到壳的 `TextureView`——播放器不重建、不缓冲。
+- Android 13+ 用 `ActivityOptions.makeLaunchIntoPip` 直接以 PiP 形态启动，无全屏闪现。
+- PiP 为纯系统原生窗口：原生圆角、捏合缩放、拖动、关闭区，附带 快退10s / 播放暂停 / 快进10s 控件（经媒体会话）。
+- 点展开 → 无缝回到视频页；拖到关闭区 → 停止播放、上报进度、销毁播放器。
+- 为此把 `media_kit_video` 转为本地维护（`third_party/media_kit_video`，基于上游 fork `version_1.2.5`），新增 `externalSurfaceActive` 开关，PiP 接管期间挂起其自动重挂，避免输出被抢回 Flutter 纹理导致黑屏。
+- 取舍：PiP 窗口内不显示弹幕（弹幕由 Flutter 渲染，无法进入原生窗口）。
+- 备选：应用内浮动小窗（`返回时小窗播放`，默认关），带弹幕、可拖动吸边。
 
-- [x] Android
-- [x] iOS
-- [x] Pad
-- [x] Windows
-- [x] Linux
+### 2. Android 17 / Tensor 省电
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/piliplus.svg)](https://repology.org/project/piliplus/versions)
+- 前台请求本应用 60Hz 渲染刷新率，降低发热与耗电（`Android 17/Tensor 省电刷新率`，API 37+ 默认开）。
+- 调整 Android 默认播放负载：Wi-Fi 默认 1080P、蜂窝 720P，解码偏好 HEVC/AVC/AV1。
+- 迁移路径默认关闭播放器预初始化与超分，但**保留**后台音频服务与高音质，不影响锁屏 / 后台 / PiP 听歌。
 
-## refactor
+### 3. 新版滑动调节亮度/音量（默认）
 
-- [ ] gRPC [wip]
-- [x] 用户界面
-- [x] 其他
+- 旧版逐帧累加的亮度/音量调节稍滑就跳；新版改为「捕获手势起点值 + 相对起点总位移映射」，跟手不漂移，接近原版 B 站手感。
+- 旧逻辑保留为设置项 `使用旧版滑动调节`（默认关）。
 
-## feat
+### 4. 应用图标
 
-- [x] 编辑动态
-- [x] DLNA 投屏
-- [x] 离线缓存/播放
-- [x] 移动端支持点击弹幕悬停，点赞、复制、举报 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 播放音频
-- [x] 跳过番剧片头/片尾
-- [x] 安卓端 `loudnorm` 适配 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] Win/Mac 支持极验、短信登录 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 视频截取动图 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] AI 原声翻译
-- [x] SuperChat
-- [x] 播放课堂视频
-- [x] 发起投票
-- [x] 发布动态/评论支持`富文本编辑`/`表情显示`/`@用户`
-- [x] 修改消息设置
-- [x] 修改聊天设置
-- [x] 展示折叠消息
-- [x] 查看用户图文
-- [x] 动态话题
-- [x] 直播分区
-- [x] 分享`视频`/`番剧`/`动态`/`专栏`/`直播`至消息
-- [x] 创建/修改/删除关注分组
-- [x] 移除粉丝
-- [x] 直播弹幕发送表情
-- [x] 收藏夹排序
-- [x] 稍后再看 ~~`未看`~~ / `未看完` / ~~`已看完`~~ 分类
-- [x] WebDAV 备份/恢复设置
-- [x] 保存评论/动态
-- [x] 高级弹幕 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 取消/置顶评论
-- [x] 记笔记
-- [x] 多账号支持 by [@My-Responsitories](https://github.com/My-Responsitories)
-- [x] 屏蔽带货动态/评论
-- [x] 互动视频
-- [x] 发评/动态反诈
-- [x] 高能进度条
-- [x] 滑动跳转预览视频缩略图
-- [x] Live Photo
-- [x] 复制/移动/排序收藏夹/稍后再看视频
-- [x] 超分辨率
-- [x] 合并弹幕
-- [x] 会员彩色弹幕
-- [x] 播放全部/继续播放/倒序播放
-- [x] Cookie登录
-- [x] 显示视频分段信息
-- [x] 调节字幕大小
-- [x] 调节全屏弹幕大小
-- [x] 收藏夹/稍后再看多选删除
-- [x] 搜索用户动态
-- [x] 直播弹幕
-- [x] 修改头像/用户名/签名/性别/生日
-- [x] 创建/编辑/删除收藏夹
-- [x] 评论楼中楼查看对话
-- [x] 评论楼中楼定位点击查看的评论
-- [x] 评论楼中楼按热度/时间排序
-- [x] 评论点踩
-- [x] 私信发图
-- [x] 投币动画
-- [x] 取消/追番，更新追番状态
-- [x] 取消/订阅合集
-- [x] SponsorBlock
-- [x] 显示视频完整合集
-- [x] 三连动画
-- [x] 番剧三连
-- [x] 带图评论
-- [x] 视频TAG
-- [x] 筛选搜索
-- [x] 转发动态
-- [x] 合集图片
-- [x] 删除/置顶/撤回私信
-- [x] 举报用户/评论/视频/动态
-- [x] 删除/发布/置顶文本/图片动态
-- [x] 其他
+- 换为白色版 bilibili 图标（自适应 + 传统各尺寸）。
 
-## opt
+## 新增/变更设置
 
-- [x] 专栏界面
-- [x] 私信界面
-- [x] 收藏面板
-- [x] PIP
-- [x] 视频封面
-- [x] 回复界面
-- [x] 系统通知
-- [x] 评论显示
-- [x] 亮度调节
-- [x] 视频播放
-- [x] 视频staff
-- [x] 防止bottomsheet遮挡全屏视频
-- [x] 其他
+**播放设置**
 
-## fix
+- `返回键进入原生画中画`：默认开。返回键回上一页并以系统原生 PiP 继续播放。
+- `返回时小窗播放`：默认关。上一项关闭时生效，改用应用内浮动小窗（带弹幕）。
+- `后台画中画`：默认开。进入后台时以系统 PiP 播放。
+- `关闭画中画时暂停`：默认开。PiP 拖到关闭区后停止播放。
+- `画中画不加载弹幕`：默认关。
+- `使用旧版滑动调节`：默认关。开启回到旧版逐帧亮度/音量调节。
 
-- [x] 番剧分集点赞/投币/收藏
-- [x] bugs
+**视频设置**
 
-<br/>
+- `Android 17/Tensor 省电刷新率`：API 37+ 默认开，请求本应用 60Hz 渲染。
 
-## 功能
+## 已知平台限制
 
-- [x] 推荐视频列表(app端)
-- [x] 最热视频列表
-- [x] 热门直播
-- [x] 番剧列表
-- [x] 屏蔽黑名单内用户视频
-- [x] 无痕模式（播放视为未登录）
-- [x] 游客模式（推荐视为未登录）
+- **PiP 默认大小/落点无法由 App 指定**：Android 不提供公开 API，系统自行决定并记忆用户上次拖动/缩放的结果（实测 `setSourceRectHint` 在 Pixel 上不改变落点）。
+- **两种 PiP 记忆各自独立**：回桌面 PiP（`MainActivity`，带弹幕）与返回键 PiP（`PipActivity`，无弹幕）由系统按 Activity 组件分别记忆，无法用 API 合并；统一记忆需牺牲其中一种的弹幕，故保持现状。
+- **微信分享仍为纯文字+链接**：原版卡片链接需微信开放平台 SDK + 绑定本包名/签名的 AppID，个人包无法获得，暂不实现（详见 [TODO.md](TODO.md)）。
 
-- [x] 用户相关
-  - [x] 粉丝、关注用户、拉黑用户查看
-  - [x] 用户主页查看
-  - [x] 关注/取关用户
-  - [x] 离线缓存
-  - [x] 稍后再看
-  - [x] 观看记录
-  - [x] 我的收藏
-  - [x] 站内私信
-  
-- [x] 动态相关
-  - [x] 全部、投稿、番剧分类查看
-  - [x] 动态评论查看
-  - [x] 动态评论回复功能
+## 当前 APK
 
-- [x] 视频播放相关
-  - [x] 双击快进/快退
-  - [x] 双击播放/暂停
-  - [x] 垂直方向调节亮度/音量
-  - [x] 垂直方向上滑全屏、下滑退出全屏
-  - [x] 水平方向手势快进/快退
-  - [x] 全屏方向设置
-  - [x] 倍速选择/长按2倍速
-  - [x] 硬件加速（视机型而定）
-  - [x] 画质选择（高清画质未解锁）
-  - [x] 音质选择（视视频而定）
-  - [x] 解码格式选择（视视频而定）
-  - [x] 弹幕
-  - [x] 字幕
-  - [x] 记忆播放
-  - [x] 视频比例：高度/宽度适应、填充、包含等
-     
-- [x] 搜索相关
-  - [x] 热搜
-  - [x] 搜索历史
-  - [x] 默认搜索词
-  - [x] 投稿、番剧、直播间、用户搜索
-  - [x] 视频搜索排序、按时长筛选
-    
-- [x] 视频详情页相关
-  - [x] 视频选集(分p)切换
-  - [x] 点赞、投币、收藏/取消收藏
-  - [x] 相关视频查看
-  - [x] 评论用户身份标识
-  - [x] 评论(排序)查看、二楼评论查看
-  - [x] 主楼、二楼评论回复功能
-  - [x] 评论点赞
-  - [x] 评论笔记图片查看、保存
+- 实机验证：Pixel 10 Pro，Android 17 / API 37，arm64-v8a。
+- 路径：`build/app/outputs/flutter-apk/app-arm64-v8a-release.apk`
+- 最新 SHA256：`20D445E714C4259DDA731B26048D5D69ED8D2B7504195818DBB0C365B751E4B9`
+- 构建日期：2026-07-10
 
-- [x] 设置相关
-  - [x] 画质、音质、解码方式预设      
-  - [x] 图片质量设定
-  - [x] 主题模式：亮色/暗色/跟随系统
-  - [x] 震动反馈(可选)
-  - [x] 高帧率
-  - [x] 自动全屏
-  - [x] 横屏适配
-- [ ] 等等
+## 构建
 
-<br/>
+依赖上游 fork 的自定义 `media_kit` 等（见 `pubspec.yaml` 的 git/path 依赖，`media_kit_video` 已 vendored 到 `third_party/`）。arm64 release：
 
-## 下载
+```
+flutter pub get
+flutter build apk --release --split-per-abi --target-platform android-arm64
+```
 
-可以通过右侧release进行下载或拉取代码到本地进行编译
-
-<br/>
-
-## 声明
-
-此项目（PiliPlus）是个人为了兴趣而开发，仅用于学习和测试，请于下载后24小时内删除。
-所用API皆从官方网站收集，不提供任何破解内容。
-在此致敬原作者：[guozhigq/pilipala](https://github.com/guozhigq/pilipala)
-在此致敬上游作者：[orz12/PiliPalaX](https://github.com/orz12/PiliPalaX)
-本仓库做了更激进的修改，感谢原作者的开源精神。
-
-感谢使用
-
-
-<br/>
-
-## 致谢
-
-- [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect)
-- [flutter_meedu_videoplayer](https://github.com/zezo357/flutter_meedu_videoplayer)
-- [media-kit](https://github.com/media-kit/media-kit)
-- [dio](https://pub.dev/packages/dio)
-- 等等
-
-<br/>
-<br/>
-<br/>
-
-## Star History
-
-<a href="https://www.star-history.com/#bggRGjQaUbCoE/PiliPlus&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=bggRGjQaUbCoE/PiliPlus&type=Date" />
- </picture>
-</a>
+本次开发使用的临时工具链（Flutter 3.44.5 / Android SDK / JDK 17 等）放在仓库外的 `D:\CodexTemp`，不提交。

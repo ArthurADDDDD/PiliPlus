@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math' show min;
 import 'dart:ui';
 
@@ -49,6 +50,8 @@ import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/heart_beat_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
+import 'package:PiliPlus/plugin/pl_player/mini_player.dart';
+import 'package:PiliPlus/plugin/pl_player/pip_shell.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
@@ -368,6 +371,18 @@ class VideoDetailController extends GetxController
     heroTag = args['heroTag'];
     cover = RxString(args['cover'] ?? '');
     isVertical = RxBool(args['isVertical'] ?? false);
+
+    if (args.remove('fromMiniPlayer') == true) {
+      final ctr = PlPlayerController.instance;
+      if (ctr != null &&
+          ctr.cid == cid.value &&
+          ctr.videoController != null) {
+        // 从应用内小窗展开：直接衔接存活的播放实例，不重建数据源
+        _fromMiniPlayer = true;
+        _autoPlay.value = true;
+        videoState.value = true;
+      }
+    }
 
     sourceType = args['sourceType'] ?? SourceType.normal;
     isFileSource = sourceType == SourceType.file;
@@ -712,10 +727,23 @@ class VideoDetailController extends GetxController
     return null;
   }
 
+  /// 从应用内小窗展开时置位；首次 playerInit 直接复用播放实例。
+  bool _fromMiniPlayer = false;
+
   Future<void> playerInit({
     bool? autoplay,
     bool autoFullScreenFlag = false,
   }) async {
+    if (_fromMiniPlayer) {
+      _fromMiniPlayer = false;
+      final ctr = plPlayerController;
+      if (ctr.cid == cid.value && ctr.videoController != null) {
+        // 保持当前播放/字幕状态不动，仅让页面挂上播放器
+        videoState.value = true;
+        defaultST = null;
+        return;
+      }
+    }
     Duration? seek = defaultST ?? playedTime;
     if (seek == null || seek == Duration.zero) {
       seek = getFirstSegment();
@@ -1216,6 +1244,37 @@ class VideoDetailController extends GetxController
         );
       } catch (_) {}
     }
+  }
+
+  /// 播放器区域的返回处理：满足条件时先把播放器交给应用内小窗再 pop。
+  void onPopInvokedWithResult(bool didPop, Object? result) {
+    if (didPop) {
+      _detachToMiniPlayerIfNeeded();
+    }
+    plPlayerController.onPopInvokedWithResult(didPop, result);
+  }
+
+  bool _detachToMiniPlayerIfNeeded() {
+    final ctr = plPlayerController;
+    if (!Platform.isAndroid ||
+        !(Pref.pipOnBackNative || Pref.miniPlayerOnBack) ||
+        ctr.isCloseAll ||
+        ctr.detachedToMiniPlayer ||
+        // 下方还有其它视频页时不进小窗，避免与其页面状态冲突
+        ctr.playerCount > 1 ||
+        !ctr.playerStatus.isPlaying ||
+        ctr.videoController == null) {
+      return false;
+    }
+    final detachArgs = Map.of(args)..['cid'] = cid.value;
+    final detached = Pref.pipOnBackNative
+        ? PipShell.start(detachArgs)
+        : MiniVideoPlayer.show(detachArgs);
+    if (!detached) {
+      return false;
+    }
+    ctr.detachToMiniPlayer();
+    return true;
   }
 
   @override

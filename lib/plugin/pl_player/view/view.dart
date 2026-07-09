@@ -149,6 +149,11 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
   GestureType? _gestureType;
   Offset? _initialFocalPoint;
 
+  // 新版滑动调节：捕获手势起点的值与位置，按相对起点的总位移映射，
+  // 不受 setBrightness 回写抖动影响（接近原版 B 站手感）。
+  double _slideStartValue = 0;
+  double _slideStartDy = 0;
+
   bool _pauseDueToPauseUponEnteringBackgroundMode = false;
 
   StreamSubscription? _brightnessListener;
@@ -332,9 +337,13 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
     if (!plPlayerController.continuePlayInBackground.value) {
       late final player = plPlayerController.videoPlayerController;
       if (const <AppLifecycleState>[.paused, .detached].contains(state)) {
-        if (player != null && player.state.playing) {
-          _pauseDueToPauseUponEnteringBackgroundMode = true;
-          player.pause();
+        if (Platform.isAndroid) {
+          _pauseAfterPipSettles();
+        } else {
+          if (player != null && player.state.playing) {
+            _pauseDueToPauseUponEnteringBackgroundMode = true;
+            player.pause();
+          }
         }
       } else {
         if (_pauseDueToPauseUponEnteringBackgroundMode) {
@@ -343,6 +352,24 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         }
       }
     }
+  }
+
+  void _pauseAfterPipSettles() {
+    Future<void>.delayed(const Duration(milliseconds: 600), () {
+      final lifecycleState = WidgetsBinding.instance.lifecycleState;
+      final isBackground = const <AppLifecycleState>[
+        .paused,
+        .detached,
+      ].contains(lifecycleState);
+      if (!mounted || !isBackground || AndroidHelper.isPipMode) {
+        return;
+      }
+      final player = plPlayerController.videoPlayerController;
+      if (player != null && player.state.playing) {
+        _pauseDueToPauseUponEnteringBackgroundMode = true;
+        player.pause();
+      }
+    });
   }
 
   Future<void> setBrightness(double value) async {
@@ -1037,6 +1064,14 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
           // 右边区域
           _gestureType = .right;
         }
+        // 新版相对调节：记录手势起点的当前值与 Y 坐标
+        if (_gestureType == .left) {
+          _slideStartValue = _brightnessValue.value;
+          _slideStartDy = details.localFocalPoint.dy;
+        } else if (_gestureType == .right) {
+          _slideStartValue = plPlayerController.volume.value;
+          _slideStartDy = details.localFocalPoint.dy;
+        }
       }
       return;
     }
@@ -1085,11 +1120,22 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
 
       _onHorizontalDragUpdate(delta.dx);
     } else if (_gestureType == .left) {
-      // 左边区域 👈
-      final double level = maxHeight * 3;
-      final double brightness = (_brightnessValue.value - delta.dy / level)
-          .clamp(0.0, 1.0);
-      setBrightness(brightness);
+      // 左边区域 👈 亮度
+      if (plPlayerController.legacySlideAdjust) {
+        final double level = maxHeight * 3;
+        final double brightness = (_brightnessValue.value - delta.dy / level)
+            .clamp(0.0, 1.0);
+        setBrightness(brightness);
+      } else {
+        // 相对起点：全程约 0.75×高度的滑动 = 满量程，跟手且不漂移
+        final double range = maxHeight * 0.75;
+        final double totalDy = details.localFocalPoint.dy - _slideStartDy;
+        final double brightness = (_slideStartValue - totalDy / range).clamp(
+          0.0,
+          1.0,
+        );
+        setBrightness(brightness);
+      }
     } else if (_gestureType == .center) {
       // 全屏
       const double threshold = 2.5; // 滑动阈值
@@ -1115,20 +1161,38 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
         }
       }
     } else if (_gestureType == .right) {
-      // 右边区域
-      final double level = maxHeight * 0.5;
-      EasyThrottle.throttle(
-        'setVolume',
-        const Duration(milliseconds: 20),
-        () {
-          final double volume = clampDouble(
-            plPlayerController.volume.value - delta.dy / level,
-            0.0,
-            plPlayerController.maxVolume,
-          );
-          plPlayerController.setVolume(volume);
-        },
-      );
+      // 右边区域 音量
+      if (plPlayerController.legacySlideAdjust) {
+        final double level = maxHeight * 0.5;
+        EasyThrottle.throttle(
+          'setVolume',
+          const Duration(milliseconds: 20),
+          () {
+            final double volume = clampDouble(
+              plPlayerController.volume.value - delta.dy / level,
+              0.0,
+              plPlayerController.maxVolume,
+            );
+            plPlayerController.setVolume(volume);
+          },
+        );
+      } else {
+        // 相对起点：全程约 0.75×高度的滑动 = 满量程
+        final double range = maxHeight * 0.75;
+        final double totalDy = details.localFocalPoint.dy - _slideStartDy;
+        EasyThrottle.throttle(
+          'setVolume',
+          const Duration(milliseconds: 20),
+          () {
+            final double volume = clampDouble(
+              _slideStartValue - totalDy / range * plPlayerController.maxVolume,
+              0.0,
+              plPlayerController.maxVolume,
+            );
+            plPlayerController.setVolume(volume);
+          },
+        );
+      }
     }
   }
 

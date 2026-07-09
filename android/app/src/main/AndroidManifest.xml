@@ -207,6 +207,16 @@
                     android:path="/launch" />
             </intent-filter>
         </activity>
+        <activity
+            android:name=".PipActivity"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar" />
         <service
             android:name="com.ryanheise.audioservice.AudioService"
             android:exported="true"

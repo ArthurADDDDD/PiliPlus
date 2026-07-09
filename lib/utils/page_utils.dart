@@ -194,6 +194,25 @@ abstract final class PageUtils {
     return (min <= aspectRatio) && (aspectRatio <= max);
   }
 
+  /// 归一化 PiP 宽高比：接近 16:9 / 9:16 的统一取标准值。
+  /// 系统对 PiP 窗口大小（捏合缩放）的记忆与宽高比绑定，
+  /// 逐视频的细微比例差异会导致记忆被重置。
+  static (int, int) normalizePipAspect(int width, int height) {
+    if (!_fitsInAndroidRequirements(width, height)) {
+      return height > width ? (9, 16) : (16, 9);
+    }
+    final ratio = width / height;
+    const landscape = 16 / 9;
+    const portrait = 9 / 16;
+    if ((ratio - landscape).abs() / landscape < 0.12) {
+      return (16, 9);
+    }
+    if ((ratio - portrait).abs() / portrait < 0.12) {
+      return (9, 16);
+    }
+    return (width, height);
+  }
+
   static void enterPip({
     int? width,
     int? height,
@@ -201,16 +220,8 @@ abstract final class PageUtils {
     required bool isLive,
     required bool isPlaying,
   }) {
-    if (width != null &&
-        height != null &&
-        !_fitsInAndroidRequirements(width, height)) {
-      if (height > width) {
-        width = 9;
-        height = 16;
-      } else {
-        width = 16;
-        height = 9;
-      }
+    if (width != null && height != null) {
+      (width, height) = normalizePipAspect(width, height);
     }
     PiliAndroidHelper.enterPip(
       width ?? 16,

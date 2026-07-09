@@ -18,6 +18,7 @@ import 'package:PiliPlus/services/service_locator.dart';
 import 'package:PiliPlus/utils/cache_manager.dart';
 import 'package:PiliPlus/utils/calc_window_position.dart';
 import 'package:PiliPlus/utils/date_utils.dart';
+import 'package:PiliPlus/utils/android/android_helper.dart';
 import 'package:PiliPlus/utils/extension/theme_ext.dart';
 import 'package:PiliPlus/utils/json_file_handler.dart';
 import 'package:PiliPlus/utils/max_screen_size.dart';
@@ -49,6 +50,31 @@ import 'package:window_manager/window_manager.dart' hide calcWindowPosition;
 WebViewEnvironment? webViewEnvironment;
 
 EdgeInsets? tmpPadding;
+
+DisplayMode _defaultAndroidDisplayMode(List<DisplayMode> modes) {
+  final validModes = modes
+      .where((mode) => mode.width > 0 && mode.height > 0)
+      .toList();
+  if (validModes.isEmpty) {
+    return DisplayMode.auto;
+  }
+
+  final nativePixels = validModes.fold<int>(0, (current, mode) {
+    final pixels = mode.width * mode.height;
+    return pixels > current ? pixels : current;
+  });
+  final batteryModes =
+      validModes
+          .where(
+            (mode) =>
+                mode.width * mode.height == nativePixels &&
+                mode.refreshRate > 0 &&
+                mode.refreshRate <= 60.5,
+          )
+          .toList()
+        ..sort((a, b) => b.refreshRate.compareTo(a.refreshRate));
+  return batteryModes.firstOrNull ?? DisplayMode.auto;
+}
 
 Future<void> _initDownPath() async {
   if (PlatformUtils.isDesktop) {
@@ -98,6 +124,14 @@ void main() async {
     await Utils.copyText(e.toString());
     if (kDebugMode) debugPrint('GStorage init error: $e');
     exit(0);
+  }
+  await Pref.migrateAndroidPowerProfile();
+  if (Platform.isAndroid) {
+    PiliAndroidHelper.ensureMethodChannel();
+    await Future.wait([
+      PiliAndroidHelper.setPowerSaveRefreshRate(Pref.androidPowerSaveMode),
+      PiliAndroidHelper.setPauseOnPipDismiss(Pref.pauseOnPipDismiss),
+    ]);
   }
   ScaledWidgetsFlutterBinding.instance.scaleFactor = Pref.uiScale;
   await Future.wait([
@@ -155,7 +189,12 @@ void main() async {
             (e) => e.toString() == storageDisplay,
           );
         }
-        FlutterDisplayMode.setPreferredMode(displayMode ?? DisplayMode.auto);
+        final defaultDisplayMode = Pref.androidPowerSaveMode
+            ? _defaultAndroidDisplayMode(mode)
+            : DisplayMode.auto;
+        FlutterDisplayMode.setPreferredMode(
+          displayMode ?? defaultDisplayMode,
+        );
       });
     } else {
       ScreenBrightnessPlatform.instance.setAutoReset(false);

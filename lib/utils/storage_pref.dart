@@ -53,6 +53,82 @@ abstract final class Pref {
   static final Box _video = GStorage.video;
   static final Box _localCache = GStorage.localCache;
 
+  static const int _androidPowerProfileVersion = 4;
+
+  static Future<void> migrateAndroidPowerProfile() async {
+    if (!Platform.isAndroid || DeviceUtils.sdkInt < 37) {
+      return;
+    }
+    final version = _setting.get(
+      SettingBoxKey.androidPowerProfileVersion,
+      defaultValue: 0,
+    );
+    final currentVersion = version is int ? version : 0;
+    if (currentVersion >= _androidPowerProfileVersion) {
+      return;
+    }
+
+    final videoQa = _setting.get(SettingBoxKey.defaultVideoQa);
+    if (videoQa is! int || videoQa > VideoQuality.high1080.code) {
+      await _setting.put(
+        SettingBoxKey.defaultVideoQa,
+        VideoQuality.high1080.code,
+      );
+    }
+
+    final cellularVideoQa = _setting.get(SettingBoxKey.defaultVideoQaCellular);
+    if (cellularVideoQa is! int ||
+        cellularVideoQa > VideoQuality.high720.code) {
+      await _setting.put(
+        SettingBoxKey.defaultVideoQaCellular,
+        VideoQuality.high720.code,
+      );
+    }
+
+    final codecs = _setting.get(SettingBoxKey.preferCodecs);
+    if (codecs is! List || codecs.isEmpty) {
+      await _setting.put(
+        SettingBoxKey.preferCodecs,
+        const [
+          VideoDecodeFormatType.HEVC,
+          VideoDecodeFormatType.AVC,
+          VideoDecodeFormatType.AV1,
+        ].map((codec) => codec.name).toList(),
+      );
+    }
+
+    if (currentVersion == 1) {
+      await _setting.put(SettingBoxKey.enableBackgroundPlay, true);
+      await _setting.put(SettingBoxKey.continuePlayInBackground, true);
+      await _setting.put(SettingBoxKey.defaultAudioQa, AudioQuality.hiRes.code);
+    }
+    if (currentVersion < 3) {
+      Future<void> putDefault(String key, Object value) async {
+        if (_setting.get(key) == null) {
+          await _setting.put(key, value);
+        }
+      }
+
+      await putDefault(SettingBoxKey.autoPiP, true);
+      await putDefault(SettingBoxKey.pipOnBack, true);
+      await putDefault(SettingBoxKey.pauseOnPipDismiss, true);
+      await putDefault(SettingBoxKey.androidPowerSaveMode, true);
+    }
+    if (currentVersion < 4) {
+      await _setting.put(SettingBoxKey.pipOnBack, false);
+    }
+    await _setting.put(
+      SettingBoxKey.superResolutionType,
+      SuperResolutionType.disable.index,
+    );
+    await _setting.put(SettingBoxKey.preInitPlayer, false);
+    await _setting.delete(SettingBoxKey.displayMode);
+    await _setting.put(
+      SettingBoxKey.androidPowerProfileVersion,
+      _androidPowerProfileVersion,
+    );
+  }
+
   static UserInfoData? get userInfoCache =>
       GStorage.userInfo.get('userInfoCache');
 
@@ -227,12 +303,16 @@ abstract final class Pref {
 
   static int get defaultVideoQa => _setting.get(
     SettingBoxKey.defaultVideoQa,
-    defaultValue: VideoQuality.super8k.code,
+    defaultValue: Platform.isAndroid
+        ? VideoQuality.high1080.code
+        : VideoQuality.super8k.code,
   );
 
   static int get defaultVideoQaCellular => _setting.get(
     SettingBoxKey.defaultVideoQaCellular,
-    defaultValue: VideoQuality.high1080.code,
+    defaultValue: Platform.isAndroid
+        ? VideoQuality.high720.code
+        : VideoQuality.high1080.code,
   );
 
   static int get defaultAudioQa => _setting.get(
@@ -269,6 +349,13 @@ abstract final class Pref {
     final codecs = _setting.get(SettingBoxKey.preferCodecs);
     if (codecs is List && codecs.isNotEmpty) {
       return codecs.map((i) => VideoDecodeFormatType.values.byName(i)).toList();
+    }
+    if (Platform.isAndroid) {
+      return const [
+        VideoDecodeFormatType.HEVC,
+        VideoDecodeFormatType.AVC,
+        VideoDecodeFormatType.AV1,
+      ];
     }
     return const [];
   }
@@ -568,6 +655,10 @@ abstract final class Pref {
     defaultValue: true,
   );
 
+  // false = 新版（相对起点映射，接近原版 B 站，默认）；true = 旧版逐帧累加
+  static bool get legacySlideAdjust =>
+      _setting.get(SettingBoxKey.legacySlideAdjust, defaultValue: false);
+
   static bool get enableSlideFS =>
       _setting.get(SettingBoxKey.enableSlideFS, defaultValue: true);
 
@@ -768,7 +859,24 @@ abstract final class Pref {
       _setting.get(SettingBoxKey.fullScreenGestureReverse, defaultValue: false);
 
   static bool get autoPiP =>
-      _setting.get(SettingBoxKey.autoPiP, defaultValue: false);
+      _setting.get(SettingBoxKey.autoPiP, defaultValue: Platform.isAndroid);
+
+  static bool get pipOnBack =>
+      _setting.get(SettingBoxKey.pipOnBack, defaultValue: false);
+
+  static bool get pipOnBackNative =>
+      _setting.get(SettingBoxKey.pipOnBackNative, defaultValue: true);
+
+  static bool get miniPlayerOnBack =>
+      _setting.get(SettingBoxKey.miniPlayerOnBack, defaultValue: false);
+
+  static bool get pauseOnPipDismiss =>
+      _setting.get(SettingBoxKey.pauseOnPipDismiss, defaultValue: true);
+
+  static bool get androidPowerSaveMode => _setting.get(
+    SettingBoxKey.androidPowerSaveMode,
+    defaultValue: Platform.isAndroid && DeviceUtils.sdkInt >= 37,
+  );
 
   static bool get enableSponsorBlock =>
       _setting.get(SettingBoxKey.enableSponsorBlock, defaultValue: false);

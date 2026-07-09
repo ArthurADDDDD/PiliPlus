@@ -150,3 +150,15 @@ pili_release.json
 dist
 
 test*
+
+# Local temporary toolchains/caches used for this fork.
+# The actual current install path is outside this repo: D:\CodexTemp
+CodexTemp/
+.codex-temp/
+flutter_*_temp/
+android_sdk_temp/
+jdk*_temp/
+gradle_user_home_temp/
+pub_cache_temp/
+flutter_appdata_temp/
+flutter_localappdata_temp/

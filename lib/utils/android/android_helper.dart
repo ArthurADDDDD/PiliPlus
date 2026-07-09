@@ -1,11 +1,98 @@
 import 'dart:convert';
 import 'dart:ui';
 
+import 'package:PiliPlus/plugin/pl_player/pip_shell.dart';
 import 'package:PiliPlus/utils/android/bindings.g.dart';
 import 'package:PiliPlus/utils/utils.dart';
+import 'package:flutter/services.dart';
 import 'package:jni/jni.dart';
 
 abstract final class PiliAndroidHelper {
+  static const MethodChannel _channel = MethodChannel('piliplus/android');
+  static bool _methodChannelInitialized = false;
+  static void Function(bool isInPictureInPictureMode)?
+  onPictureInPictureModeChanged;
+
+  static void ensureMethodChannel() {
+    if (_methodChannelInitialized) {
+      return;
+    }
+    _methodChannelInitialized = true;
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'onPictureInPictureModeChanged':
+          onPictureInPictureModeChanged?.call(call.arguments == true);
+        case 'PipShell.surfaceCreated':
+          final args = call.arguments as Map;
+          PipShell.onSurfaceCreated(
+            args['wid'] as String,
+            args['width'] as int,
+            args['height'] as int,
+          );
+        case 'PipShell.surfaceChanged':
+          final args = call.arguments as Map;
+          PipShell.onSurfaceChanged(
+            args['width'] as int,
+            args['height'] as int,
+          );
+        case 'PipShell.surfaceDestroyed':
+          PipShell.onSurfaceDestroyed();
+        case 'PipShell.expanded':
+          PipShell.onExpanded();
+        case 'PipShell.closed':
+          PipShell.onClosed();
+      }
+    });
+  }
+
+  static Future<void> enterPipShell({
+    required int width,
+    required int height,
+    required bool isLive,
+    required bool isPlaying,
+  }) async {
+    try {
+      await _channel.invokeMethod('enterPipShell', {
+        'width': width,
+        'height': height,
+        'isLive': isLive,
+        'isPlaying': isPlaying,
+      });
+    } catch (e) {
+      Utils.reportError(e);
+    }
+  }
+
+  static Future<void> pipShellReleaseSurface() async {
+    try {
+      await _channel.invokeMethod('pipShellReleaseSurface');
+    } catch (_) {}
+  }
+
+  static Future<void> pipShellFinish() async {
+    try {
+      await _channel.invokeMethod('pipShellFinish');
+    } catch (_) {}
+  }
+
+  static void pipShellLog(String message) {
+    try {
+      _channel.invokeMethod('pipShellLog', message);
+    } catch (_) {}
+  }
+
+  static Future<void> setPowerSaveRefreshRate(bool enabled) async {
+    try {
+      await _channel.invokeMethod('setPowerSaveRefreshRate', enabled);
+    } catch (_) {}
+  }
+
+  static Future<void> setPauseOnPipDismiss(bool enabled) async {
+    try {
+      await _channel.invokeMethod('setPauseOnPipDismiss', enabled);
+    } catch (_) {}
+  }
+
   @pragma('vm:prefer-inline')
   static void back() => AndroidHelper.back();
 
