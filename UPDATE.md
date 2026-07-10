@@ -1,5 +1,63 @@
 # Update
 
+## 2026-07-10（第十四轮）
+
+### 修复 apksigner 证书指纹解析：兼容 v3/v3.1 签名方案的现代输出格式
+
+- 背景：用户第一次真实触发正式 Release 构建（tag `v2.0.9+2`）时，APK 构建
+  与签名均成功，但在 "[Release] 校验 APK 签名与证书指纹（apksigner）" 这一
+  步失败，报错 `could not find a 'Signer #1 certificate SHA-256 digest'
+  line in apksigner output`。根因**不是**证书不匹配，而是解析器的 bug：
+  现代 `apksigner`（APK Signature Scheme v3/v3.1，支持密钥轮换）会按
+  `Signer (minSdkVersion=X, maxSdkVersion=Y) certificate SHA-256 digest:
+  ...` 这种按 minSdk/maxSdk 范围分块的格式输出，而不总是输出旧式固定的
+  `Signer #1 certificate SHA-256 digest:` 行；`ConvertFrom-
+  ApksignerCertOutput` 里原来的正则只匹配后者，遇到前者就直接找不到匹配，
+  于是整个 Release 在最后一步 fail closed 中止（没有产生 Release/tag，
+  没有任何签名或密钥问题）。
+- 修复 `lib/scripts/signing_fingerprint.ps1`：
+  - `ConvertFrom-ApksignerCertOutput` 改为逐行匹配任意
+    `Signer ... certificate SHA-256 digest:` 开头的行（不再固定匹配
+    `#1`），大小写不敏感，兼容 CRLF/LF、行首尾空白、指纹被换行拆成两段
+    （包括冒号后立即换行、以及十六进制串中间被拆开两种情况）。同一证书
+    在多种签名方案（v1/v2/v3/v3.1）或多个 minSdk/maxSdk 区间里重复出现时
+    去重为一个值；如果解析出**多个不同**的指纹，明确 `throw` 报 ambiguous，
+    不会静默取第一个匹配（调用方 `build.yml` 已有 try/catch，会按原有
+    fail-closed 逻辑中止发布）。正则按行首锚定 `^Signer\b`，天然不会误
+    匹配 `Signer #1 public key SHA-256 digest:`（不含 "certificate" 一词）
+    或 `Source Stamp Signer certificate SHA-256 digest:`（行首是
+    `Source`，不是 `Signer`）。
+  - `Get-ApkCertFingerprint` 不再依赖 `Out-String` 的默认换行（其换行位置
+    受控制台宽度影响，是指纹被拆行的来源之一），改为按行数组捕获 apksigner
+    原始输出后用 `[Environment]::NewLine` 拼接；`$LASTEXITCODE` 检查保持
+    不变；apksigner 退出码为 0 但解析仍失败时，抛出的错误信息里附带
+    apksigner 的原始（不含任何密钥/密码/Base64）输出，便于诊断。
+- `lib/scripts/signing_fingerprint.tests.ps1` 新增 15 个测试（原 32 个不变，
+  共 47 个，`pwsh -NoProfile -File ./lib/scripts/signing_fingerprint.tests.ps1`
+  全部通过），覆盖：`Signer (minSdkVersion=.., maxSdkVersion=..)` 格式、
+  含 `(dev release=true)` 嵌套描述的格式、大小写不敏感、CRLF 换行、行首尾
+  空白、指纹换行（冒号后换行 / 十六进制中间换行）两种情况、同一指纹重复
+  两次仍解析为一个值、不同 Signer 行文案但指纹相同仍解析为一个值、两个
+  真正不同的指纹必须 throw（不得取第一个）、不得误选 `public key SHA-256
+  digest` 行、不得误选 `Source Stamp Signer certificate SHA-256 digest`
+  行、真实签名行与 public key/Source Stamp 噪音混在一起时仍能选对、63/65
+  位（非法长度）指纹必须判定失败。
+- 未改动 `.github/workflows/build.yml`：两个调用点（keystore 预检、
+  apksigner 校验）的函数签名和调用方式不变，静态审查确认现有安全逻辑
+  全部保留——构建前 keystore 证书指纹校验、构建后 apksigner 验证、
+  `EXPECTED_SIGNING_CERT_SHA256`（仍严格比对
+  `2d02cc05ff51a2b2c020fe41cc764d3aa77b0d18448807e78a9b447505a1e349`）、
+  错误密钥/缺少 Secret 的 fail-closed、tag 与 `pubspec.yaml` 一致性校验，
+  均未删除或弱化。
+- 确认失败的那次构建**没有**留下任何残留状态：`v2.0.9+2` 既没有 GitHub
+  Release 也没有 git tag（失败发生在 "Create GitHub Release" 步骤之前），
+  `pubspec.yaml` 保持 `2.0.9+2` 不变，重试时继续使用 tag `v2.0.9+2`，
+  不需要提升到 `+3`。
+- 本轮**不得**触发 GitHub Actions、不得创建 Release/tag、不得读取任何
+  Secret、不得构建正式 APK、不得跑 ADB——仅在本地/沙箱内修复解析器并跑
+  离线测试，实际的 Release 重试仍需用户手动在 GitHub Actions 上用同一个
+  `v2.0.9+2` tag 重新触发。
+
 ## 2026-07-10（第十三轮）
 
 ### 准备第一次正式 Release：v2.0.9+2（仅准备，未发布）
