@@ -1,3 +1,4 @@
+import 'package:PiliPlus/common/constants.dart';
 import 'package:PiliPlus/http/constants.dart';
 
 abstract final class Api {
@@ -409,9 +410,11 @@ abstract final class Api {
   // 黑名单
   static const String blackLst = '/x/relation/blacks';
 
-  // github 获取最新版
-  static const String latestApp =
-      'https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases';
+  // github 获取最新正式版（单个 Release，而非列表首项，避免受草稿/
+  // 预发布/排序影响）。仓库 owner/name 见 Constants.githubOwner/githubRepo，
+  // 需要该仓库实际发布过 GitHub Release 才会返回非空数据（404 表示还没有）。
+  static const String latestRelease =
+      'https://api.github.com/repos/${Constants.githubOwner}/${Constants.githubRepo}/releases/latest';
 
   // 多少人在看
   // https://api.bilibili.com/x/player/online/total?aid=913663681&cid=1203559746&bvid=BV1MM4y1s7NZ&ts=56427838

@@ -15,6 +15,7 @@ import 'package:media_kit/media_kit.dart';
 // ignore_for_file: implementation_imports
 import 'package:media_kit/ffi/ffi.dart';
 
+import 'package:media_kit_video/src/video_controller/android_video_controller/external_surface_ownership.dart';
 import 'package:media_kit_video/src/video_controller/platform_video_controller.dart';
 
 /// {@template android_video_controller}
@@ -29,9 +30,133 @@ class AndroidVideoController extends PlatformVideoController {
   /// Whether [AndroidVideoController] is supported on the current platform or not.
   static bool get supported => Platform.isAndroid;
 
-  /// PiliPlus patch: libmpv 输出被外部原生 surface（PiP 壳）接管期间置 true，
-  /// 挂起本控制器对 --wid 的自动重挂，避免把输出抢回 Flutter 纹理。
-  static bool externalSurfaceActive = false;
+  // ---------------------------------------------------------------------
+  // PiliPlus patch: external (native) surface ownership.
+  //
+  // When a native PiP shell (or any other native surface consumer) takes
+  // over the libmpv video output, [attachExternalSurface] hands ownership
+  // to it. While active, media reloads (quality/episode switch, URL
+  // reload, ...) must keep re-attaching the *external* surface instead of
+  // silently stealing the output back to the internal Flutter texture --
+  // that silent steal was the root cause of PiP freezing on reload.
+  //
+  // `onUnloadHooks` always tears down `vo=null`/`wid=0` because libmpv
+  // requires it. If external ownership is active at that point, [_external]
+  // marks itself pending re-attachment so the very next `onLoadHooks` /
+  // `videoParams` event re-attaches the external surface (with its last
+  // known size) instead of the internal one. [_loadGeneration] guards the
+  // async `CreateSurface` gap so a superseded/disposed load can't clobber
+  // state set by a newer one. Both are implemented as small,
+  // dependency-free classes (see external_surface_ownership.dart) so the
+  // ownership bookkeeping can be unit tested offline.
+  // ---------------------------------------------------------------------
+
+  final _external = ExternalSurfaceOwnership();
+  final _loadGeneration = LoadGeneration();
+
+  int _lastVideoWidth = 0;
+  int _lastVideoHeight = 0;
+
+  /// Whether the video output is currently owned by an external (e.g.
+  /// native PiP shell) surface rather than the internal Flutter texture.
+  bool get isExternalSurfaceActive => _external.active;
+
+  /// Hand libmpv's video output over to an externally-owned Android
+  /// Surface (identified by its JNI global-ref [wid], as a decimal
+  /// string). Suspends the internal Flutter surface's auto-reattach until
+  /// [detachExternalSurfaceAndRestoreInternal] or [releaseExternalSurface]
+  /// is called. Safe to call again (e.g. after a reload) to re-assert
+  /// ownership.
+  void attachExternalSurface({
+    required String wid,
+    required int width,
+    required int height,
+  }) {
+    _external.attach(wid, width, height);
+    _applyExternalSurfaceLocked();
+  }
+
+  /// Update the size of the currently-attached external surface (e.g. the
+  /// native PiP window was resized). No-op if no external surface is
+  /// attached, or if a reload is currently pending re-attachment (the
+  /// pending re-attach will pick up the latest size on its own).
+  void updateExternalSurfaceSize(int width, int height) {
+    if (!_external.updateSize(width, height)) {
+      return;
+    }
+    try {
+      player.setOption('android-surface-size', '${width}x$height');
+    } catch (exception, stacktrace) {
+      debugPrint(exception.toString());
+      debugPrint(stacktrace.toString());
+    }
+  }
+
+  /// Give ownership of the output back to the internal Flutter surface,
+  /// restoring it using the *current* internal `wid` (never a stale
+  /// reference cached before the external takeover) and the most recently
+  /// known video size. Returns `false` if the internal surface isn't
+  /// ready yet (e.g. a reload is still in flight) and the caller should
+  /// fall back to e.g. refreshing the player; returns `true` if either
+  /// the restore succeeded or an in-flight reload will complete it.
+  bool detachExternalSurfaceAndRestoreInternal() {
+    final reloadInFlight = _external.detach();
+    if (reloadInFlight) {
+      // A media reload is mid-flight; onLoadHooks/videoParams will attach
+      // the fresh internal surface itself now that ownership is internal
+      // again. Racing it here with a possibly-stale `_wid` would just
+      // cause an extra flicker.
+      return true;
+    }
+    if (_wid == null) {
+      return false;
+    }
+    try {
+      player.setOption('vo', 'null');
+      if (_lastVideoWidth > 0 && _lastVideoHeight > 0) {
+        player.setOption(
+          'android-surface-size',
+          '${_lastVideoWidth}x$_lastVideoHeight',
+        );
+      }
+      player.setOption('wid', _wid.toString());
+      player.setOption('vo', vo);
+      return true;
+    } catch (exception, stacktrace) {
+      debugPrint(exception.toString());
+      debugPrint(stacktrace.toString());
+      return false;
+    }
+  }
+
+  /// Clear external surface ownership without touching the player's
+  /// vo/wid options -- used when the external surface itself is being
+  /// destroyed (caller is responsible for tearing down vo/wid first if
+  /// still pointed at it) or the player is about to be disposed.
+  void releaseExternalSurface() {
+    _external.release();
+  }
+
+  void _applyExternalSurfaceLocked() {
+    final wid = _external.wid;
+    if (!_external.active || wid == null) {
+      return;
+    }
+    try {
+      final width = _external.width;
+      final height = _external.height;
+      if (width > 0 && height > 0) {
+        player.setOption('android-surface-size', '${width}x$height');
+      }
+      player.setOption('wid', wid);
+      player.setOption('vo', vo);
+    } catch (exception, stacktrace) {
+      debugPrint(exception.toString());
+      debugPrint(stacktrace.toString());
+    }
+  }
+
+  // ---------------------------------------------------------------------
 
   /// Fixed width of the video output.
   int? width;
@@ -74,6 +199,9 @@ class AndroidVideoController extends PlatformVideoController {
   AndroidVideoController._(super.player, super.configuration) {
     player.onLoadHooks.add(() {
       return _lock.synchronized(() async {
+        if (_loadGeneration.isDisposed) {
+          return;
+        }
         final mpv = NativePlayer.mpv;
         final ctx = player.ctx;
 
@@ -92,11 +220,17 @@ class AndroidVideoController extends PlatformVideoController {
 
           // Create a new android.view.Surface & obtain object reference to it.
           // NOTE: Previous android.view.Surface & object reference is internally released/destroyed by the method.
+          final generation = _loadGeneration.next();
           final data = await _channel.invokeMethod(
             'VideoOutputManager.CreateSurface',
             {'handle': ctx.address.toString()},
           );
           debugPrint(data.toString());
+          if (!_loadGeneration.isCurrent(generation)) {
+            // A newer load (or dispose) superseded this one while awaiting
+            // the platform channel; the surface it created is stale, drop it.
+            return;
+          }
           // Save the android.view.Surface object reference for usage inside player.stream.videoParams.listen.
           _wid = data['wid'];
         }
@@ -107,7 +241,13 @@ class AndroidVideoController extends PlatformVideoController {
         // Assign --wid here if --vo is not "gpu" or "null" i.e. custom vo/hwdec was passed through [VideoControllerConfiguration].
         try {
           // ----------------------------------------------
-          if (!androidAttachSurfaceAfterVideoParameters) {
+          if (_external.consumeReattachIfNeeded()) {
+            // PiliPlus patch: an external (e.g. native PiP) surface owns the
+            // output; reattach *it* now that a fresh media/surface is
+            // loaded instead of stealing the output back to the Flutter
+            // texture (this used to freeze the PiP window on reload).
+            _applyExternalSurfaceLocked();
+          } else if (!androidAttachSurfaceAfterVideoParameters) {
             player.setOption('wid', _wid.toString());
             player.setOption('vo', vo);
           }
@@ -134,13 +274,18 @@ class AndroidVideoController extends PlatformVideoController {
           debugPrint(exception.toString());
           debugPrint(stacktrace.toString());
         }
+        // PiliPlus patch: if an external surface owns the output, libmpv
+        // just needs vo/wid torn down across the reload -- mark it so the
+        // upcoming onLoadHooks/videoParams re-attaches the external
+        // surface instead of leaving the output nowhere (frozen last
+        // frame) or stealing it back to the internal Flutter surface.
+        _external.onUnload();
       });
     });
 
     _subscription = player.stream.videoParams.listen(
       (event) => _lock.synchronized(() async {
-        // PiliPlus patch: 外部 surface 接管期间不抢回输出
-        if (externalSurfaceActive) {
+        if (_loadGeneration.isDisposed) {
           return;
         }
         if (const [0, null].contains(event.dw) ||
@@ -159,6 +304,48 @@ class AndroidVideoController extends PlatformVideoController {
           width = event.dh ?? 0;
           height = event.dw ?? 0;
         }
+        _lastVideoWidth = width;
+        _lastVideoHeight = height;
+
+        if (_external.active) {
+          // PiliPlus patch: output belongs to the external (e.g. PiP)
+          // surface. Still keep the internal Flutter SurfaceTexture sized
+          // correctly (so a later expand-time restore doesn't hand mpv an
+          // undersized/stale internal surface), but never re-point the
+          // actual output (`wid`/`vo`) at it while external ownership
+          // holds.
+          try {
+            await _channel
+                .invokeMethod('VideoOutputManager.SetSurfaceTextureSize', {
+                  'handle': player.handle.toString(),
+                  'width': width.toString(),
+                  'height': height.toString(),
+                });
+          } catch (exception, stacktrace) {
+            debugPrint(exception.toString());
+            debugPrint(stacktrace.toString());
+          }
+          if (_loadGeneration.isDisposed) {
+            return;
+          }
+          if (_external.consumeReattachIfNeeded()) {
+            _applyExternalSurfaceLocked();
+          } else {
+            try {
+              player.setOption('android-surface-size', '${width}x$height');
+            } catch (exception, stacktrace) {
+              debugPrint(exception.toString());
+              debugPrint(stacktrace.toString());
+            }
+          }
+          rect.value = Rect.fromLTRB(
+            0.0,
+            0.0,
+            width.toDouble(),
+            height.toDouble(),
+          );
+          return;
+        }
 
         rect.value = Rect.zero;
         try {
@@ -174,6 +361,11 @@ class AndroidVideoController extends PlatformVideoController {
                 });
 
             // ----------------------------------------------
+            if (_loadGeneration.isDisposed || _external.active) {
+              // Superseded by a dispose or an external takeover while we
+              // were awaiting the platform channel above; don't clobber it.
+              return;
+            }
             player.setOption('android-surface-size', '${width}x$height');
             player.setOption('wid', _wid.toString());
             player.setOption('vo', 'gpu');
@@ -269,6 +461,11 @@ class AndroidVideoController extends PlatformVideoController {
 
   /// Disposes the instance. Releases allocated resources back to the system.
   Future<void> _dispose() async {
+    // PiliPlus patch: mark disposed so any in-flight onLoadHooks/videoParams
+    // callback awaiting a platform channel result recognizes itself as
+    // stale and no-ops instead of touching a disposed player.
+    _loadGeneration.dispose();
+    releaseExternalSurface();
     // Dispose the [StreamSubscription]s.
     await _subscription?.cancel();
     // Release the native resources.

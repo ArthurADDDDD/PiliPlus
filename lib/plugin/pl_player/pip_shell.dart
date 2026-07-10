@@ -18,22 +18,27 @@ import 'package:media_kit_video/src/video_controller/android_video_controller/re
 /// 启动），把 libmpv 的输出 surface（`wid`）从 Flutter 纹理热切换到
 /// PipActivity 的 TextureView；展开时切回 Flutter 纹理并无缝重进视频页。
 /// PiP 窗口内为纯视频画面（弹幕由 Flutter 渲染，无法进入原生窗口）。
+///
+/// Surface 所有权真正的状态机在 [AndroidVideoController]
+/// （attachExternalSurface / updateExternalSurfaceSize /
+/// detachExternalSurfaceAndRestoreInternal / releaseExternalSurface）：
+/// 分 P、清晰度切换、URL 重新加载等触发的 onUnloadHooks/onLoadHooks/
+/// videoParams 都在那里正确处理"外部 surface 接管期间的重挂"，
+/// 不再依赖本类缓存的旧 `_flutterWid` 作为恢复来源。
 abstract final class PipShell {
   static bool active = false;
 
   static Map<dynamic, dynamic>? _routeArgs;
 
-  /// Flutter 纹理的 wid（切走前保存，展开时恢复）。
-  static String? _flutterWid;
-
   /// PiP surface 的 wid（用于判断销毁事件是否针对当前输出）。
   static String? _pipWid;
 
-  /// 视频尺寸（恢复 Flutter 纹理时的 android-surface-size）。
-  static int _videoWidth = 0;
-  static int _videoHeight = 0;
-
   static PlPlayerController? get _ctr => PlPlayerController.instance;
+
+  static AndroidVideoController? get _avc {
+    final vc = _ctr?.videoController;
+    return vc is AndroidVideoController ? vc : null;
+  }
 
   /// 返回键路径入口：启动 PiP 壳。[routeArgs] 为重进 /videoV 的完整参数。
   static bool start(Map routeArgs) {
@@ -42,7 +47,7 @@ abstract final class PipShell {
     }
     final ctr = _ctr;
     final player = ctr?.videoPlayerController;
-    if (ctr == null || player == null || ctr.videoController == null) {
+    if (ctr == null || player == null || _avc == null) {
       return false;
     }
 
@@ -55,14 +60,6 @@ abstract final class PipShell {
     }
     if (width <= 0 || height <= 0) {
       return false;
-    }
-    _videoWidth = width;
-    _videoHeight = height;
-
-    try {
-      _flutterWid = player.getProperty('wid');
-    } catch (_) {
-      _flutterWid = null;
     }
 
     _routeArgs = Map.of(routeArgs)
@@ -84,26 +81,17 @@ abstract final class PipShell {
 
   /// PipActivity 的 TextureView surface 就绪：mpv 输出切换过去。
   static void onSurfaceCreated(String wid, int width, int height) {
-    final player = _ctr?.videoPlayerController;
-    if (!active || player == null) {
+    final avc = _avc;
+    if (!active || avc == null) {
       PiliAndroidHelper.pipShellReleaseSurface();
       return;
     }
     _pipWid = wid;
-    // 挂起 AndroidVideoController 的自动重挂，防止 videoParams 事件把
-    // 输出抢回 Flutter 纹理（PiP 黑屏的根因）
-    AndroidVideoController.externalSurfaceActive = true;
     try {
-      // 与 media_kit 运行时重挂 surface 的顺序一致，不先置空 vo，
-      // 减少 vo 销毁/重建带来的黑屏时间
-      player
-        ..setOption('android-surface-size', '${width}x$height')
-        ..setOption('wid', wid)
-        ..setOption('vo', 'gpu');
-      PiliAndroidHelper.pipShellLog(
-        'attached: target=$wid now=${player.getProperty('wid')} '
-        'flutterWid=$_flutterWid vo=${player.getProperty('current-vo')}',
-      );
+      // AndroidVideoController 接管本次及之后每次媒体重载后的重挂，
+      // 挂起时不再把输出抢回 Flutter 纹理（PiP 冻结的根因）。
+      avc.attachExternalSurface(wid: wid, width: width, height: height);
+      PiliAndroidHelper.pipShellLog('attached: target=$wid');
     } catch (e) {
       PiliAndroidHelper.pipShellLog('attach failed: $e');
       Utils.reportError(e);
@@ -116,16 +104,14 @@ abstract final class PipShell {
       return;
     }
     try {
-      _ctr?.videoPlayerController?.setOption(
-        'android-surface-size',
-        '${width}x$height',
-      );
+      _avc?.updateExternalSurfaceSize(width, height);
     } catch (_) {}
   }
 
   /// PiP surface 即将销毁：先把 mpv 输出摘掉，再让原生释放 Surface。
   static void onSurfaceDestroyed() {
     final player = _ctr?.videoPlayerController;
+    final avc = _avc;
     try {
       // 展开流程可能已把输出切回 Flutter 纹理，别误伤
       if (player != null &&
@@ -134,6 +120,7 @@ abstract final class PipShell {
         player
           ..setOption('vo', 'null')
           ..setOption('wid', '0');
+        avc?.releaseExternalSurface();
       }
     } catch (_) {}
     _pipWid = null;
@@ -172,7 +159,7 @@ abstract final class PipShell {
       return;
     }
     active = false;
-    AndroidVideoController.externalSurfaceActive = false;
+    _avc?.releaseExternalSurface();
     _routeArgs = null;
     final ctr = _ctr;
     if (ctr == null) {
@@ -211,30 +198,21 @@ abstract final class PipShell {
     PiliAndroidHelper.pipShellFinish();
   }
 
+  /// 展开/新页面接管时切回 Flutter 纹理；若内部 surface 尚未就绪
+  /// （比如正处于媒体重载中途），退回 refreshPlayer() 让 media_kit 重建输出。
   static void _restoreFlutterSurface() {
-    AndroidVideoController.externalSurfaceActive = false;
     final ctr = _ctr;
-    final player = ctr?.videoPlayerController;
-    if (player == null) {
+    final avc = _avc;
+    _pipWid = null;
+    if (avc == null) {
       return;
     }
-    final wid = _flutterWid;
-    _pipWid = null;
     try {
-      player.setOption('vo', 'null');
-      if (wid != null && wid.isNotEmpty && wid != '0') {
-        if (_videoWidth > 0 && _videoHeight > 0) {
-          player.setOption(
-            'android-surface-size',
-            '${_videoWidth}x$_videoHeight',
-          );
-        }
-        player
-          ..setOption('wid', wid)
-          ..setOption('vo', 'gpu');
-      } else {
-        // 兜底：拿不到原 wid 时，以当前进度重开让 media_kit 重建输出
-        ctr!.refreshPlayer();
+      final restored = avc.detachExternalSurfaceAndRestoreInternal();
+      if (!restored) {
+        // 按当前实际播放/暂停状态重建输出，不强制恢复播放：
+        // 用户在 PiP 中暂停后触发该兜底路径，不应该把视频重新播放起来。
+        ctr?.refreshPlayer(play: ctr.playerStatus.isPlaying);
       }
     } catch (e) {
       Utils.reportError(e);
