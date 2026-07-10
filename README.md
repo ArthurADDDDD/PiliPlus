@@ -53,7 +53,10 @@
 - Android 按手机 CPU 架构（`arm64-v8a`/`armeabi-v7a`/`x86_64`）自动匹配对应 APK
   下载链接；没有匹配资产时打开 Release 页面，不静默失败、不在 App 内静默安装。
 - 正式发布走 `.github/workflows/build.yml` 的手动触发流程，**必须**用固定
-  release keystore 签名，缺密钥直接失败，不会退回临时签名。完整发布步骤见
+  release keystore 签名，缺密钥直接失败，不会退回临时签名；额外配置
+  `EXPECTED_SIGNING_CERT_SHA256` 后，构建前后都会校验实际证书指纹与预期一致，
+  防止误传另一把有效但不同的 keystore。完整发布步骤（含"沿用现有签名免卸载
+  迁移" vs "新建专用签名"两种方案的取舍）见
   [`docs/RELEASE_GUIDE.md`](docs/RELEASE_GUIDE.md)。
 - 截至本文档更新时，这个 fork **还没有发布过任何正式 Release**，也**没有在
   真机上验证过**检查更新弹窗、下载、覆盖安装的完整链路——上面这些都是代码

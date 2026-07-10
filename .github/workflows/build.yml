@@ -135,6 +135,24 @@ jobs:
                     exit 1
                   fi
 
+            - name: "[Release] Preflight: 校验签名证书指纹 Variable 已配置且合法"
+              # 证书指纹本身不是秘密（公开信息），用 Repository Variable
+              # 而非 Secret；这里只校验格式，实际比对在写入 keystore 之后
+              # 和 APK 构建之后各做一次（见下方两处 fingerprint 校验步骤）。
+              if: ${{ env.IS_RELEASE == 'true' }}
+              shell: pwsh
+              env:
+                  EXPECTED_CERT_INPUT: ${{ vars.EXPECTED_SIGNING_CERT_SHA256 }}
+              run: |
+                  . lib/scripts/signing_fingerprint.ps1
+                  $normalized = ConvertTo-NormalizedFingerprint $env:EXPECTED_CERT_INPUT
+                  if ($null -eq $normalized) {
+                    Write-Error "EXPECTED_SIGNING_CERT_SHA256 repository Variable is missing, empty, or not a valid 64-hex-char SHA-256 fingerprint. Configure it (Settings -> Secrets and variables -> Actions -> Variables; see docs/RELEASE_GUIDE.md) before running a formal release. This check exists to stop a mistakenly-swapped keystore from producing a Release that can't override-install over existing users' devices."
+                    exit 1
+                  }
+                  Add-Content -Path $env:GITHUB_ENV -Value "expectedCertSha256=$normalized"
+                  Write-Host "Expected signing certificate SHA-256: $normalized"
+
             - name: "[Test build] Set and Extract version"
               if: ${{ env.IS_RELEASE != 'true' && github.event_name == 'workflow_dispatch' }}
               shell: pwsh
@@ -153,6 +171,34 @@ jobs:
                   echo storePassword='${{ secrets.KEYSTORE_PASSWORD }}' >> android/key.properties
                   echo keyAlias='${{ secrets.KEY_ALIAS }}' >> android/key.properties
                   echo keyPassword='${{ secrets.KEY_PASSWORD }}' >> android/key.properties
+
+            - name: "[Release] Preflight: 校验 keystore 证书指纹与预期一致"
+              # 在构建前就发现"传错了 keystore/alias"，而不是构建完一个
+              # 无法覆盖安装的 APK 之后才发现。不得输出密码/Base64。
+              if: ${{ env.IS_RELEASE == 'true' }}
+              shell: pwsh
+              env:
+                  KEYSTORE_ALIAS: ${{ secrets.KEY_ALIAS }}
+                  KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+              run: |
+                  . lib/scripts/signing_fingerprint.ps1
+                  try {
+                    $actual = Get-KeystoreCertFingerprint -KeystorePath "android/app/key.jks" -Alias $env:KEYSTORE_ALIAS -StorePassword $env:KEYSTORE_PASS
+                  } catch {
+                    Write-Error "Could not read the signing certificate from the keystore/alias: $($_.Exception.Message)"
+                    exit 1
+                  }
+                  $normalizedActual = ConvertTo-NormalizedFingerprint $actual
+                  if ($null -eq $normalizedActual) {
+                    Write-Error "keytool returned a fingerprint that could not be normalized to a 64-hex-char SHA-256 digest."
+                    exit 1
+                  }
+                  Add-Content -Path $env:GITHUB_ENV -Value "keystoreCertSha256=$normalizedActual"
+                  if (-not (Test-FingerprintMatch -Expected $env:expectedCertSha256 -Actual $actual)) {
+                    Write-Error "Signing certificate mismatch.`nExpected: $env:expectedCertSha256`nActual:   $normalizedActual`nFormal release aborted to prevent an APK that cannot upgrade existing installations."
+                    exit 1
+                  }
+                  Write-Host "Keystore certificate fingerprint matches EXPECTED_SIGNING_CERT_SHA256: $normalizedActual"
 
             - name: Flutter Build - 正式 Release Apk
               if: ${{ env.IS_RELEASE == 'true' }}
@@ -178,26 +224,54 @@ jobs:
                   done
               shell: bash
 
-            - name: "[Release] 校验 APK 签名（apksigner）"
+            - name: "[Release] 校验 APK 签名与证书指纹（apksigner）"
+              # 双重校验：apksigner 本身验证签名有效性 + 每个 APK 的证书
+              # SHA-256 与 EXPECTED_SIGNING_CERT_SHA256 一致（防止 Gradle
+              # 实际用错了 signingConfig，即便前面 keystore 本身校验通过）。
               if: ${{ env.IS_RELEASE == 'true' }}
+              shell: pwsh
               run: |
-                  set -o pipefail
-                  build_tools_dir=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)
-                  apksigner="${build_tools_dir}apksigner"
-                  fail=0
-                  for apk in PiliPlus_android_*.apk; do
-                    echo "== $apk =="
-                    if ! "$apksigner" verify --verbose --print-certs "$apk" | tee "${apk}.apksigner.txt"; then
-                      echo "::error::apksigner verify failed for $apk"
-                      fail=1
-                    fi
-                    cert_sha256=$(grep -m1 "Signer #1 certificate SHA-256 digest" "${apk}.apksigner.txt" | awk '{print $NF}')
-                    echo "cert_sha256_${apk}=${cert_sha256}" >> "$GITHUB_ENV"
-                  done
-                  if [ "$fail" -ne 0 ]; then
-                    echo "::error::one or more APKs failed signature verification; refusing to publish a formal release with an unverifiable APK"
+                  . lib/scripts/signing_fingerprint.ps1
+
+                  $buildToolsRoot = Join-Path $env:ANDROID_HOME 'build-tools'
+                  $latest = Get-ChildItem -Path $buildToolsRoot -Directory |
+                      Sort-Object -Property @{ Expression = {
+                          try { [version]($_.Name -replace '[^\d\.].*$', '') } catch { [version]'0.0.0' }
+                      } } -Descending |
+                      Select-Object -First 1
+                  if ($null -eq $latest) {
+                    Write-Error "no Android build-tools directory found under $buildToolsRoot"
                     exit 1
-                  fi
+                  }
+                  $apksigner = Join-Path $latest.FullName 'apksigner'
+
+                  $failed = $false
+                  $lastCert = $null
+                  Get-ChildItem -Path . -Filter 'PiliPlus_android_*.apk' | ForEach-Object {
+                    $apkName = $_.Name
+                    Write-Host "== $apkName =="
+                    try {
+                      $cert = Get-ApkCertFingerprint -ApksignerPath $apksigner -ApkPath $_.FullName
+                    } catch {
+                      Write-Error "apksigner verification failed for ${apkName}: $($_.Exception.Message)"
+                      $script:failed = $true
+                      return
+                    }
+                    $normalizedCert = ConvertTo-NormalizedFingerprint $cert
+                    Write-Host "  certificate SHA-256: $normalizedCert"
+                    if (-not (Test-FingerprintMatch -Expected $env:expectedCertSha256 -Actual $cert)) {
+                      Write-Error "Signing certificate mismatch for ${apkName}.`nExpected: $env:expectedCertSha256`nActual:   $normalizedCert`nFormal release aborted to prevent an APK that cannot upgrade existing installations."
+                      $script:failed = $true
+                    }
+                    $script:lastCert = $normalizedCert
+                  }
+
+                  if ($null -ne $lastCert) {
+                    Add-Content -Path $env:GITHUB_ENV -Value "apkCertSha256=$lastCert"
+                  }
+                  if ($failed) {
+                    exit 1
+                  }
 
             - name: Generate checksums
               run: sha256sum PiliPlus_android_*.apk | tee SHA256SUMS.txt
@@ -214,11 +288,24 @@ jobs:
                     echo "|---|---|"
                     echo "| commit | \`${{ github.sha }}\` |"
                     echo "| branch/ref | \`${{ github.ref_name }}\` |"
+                    echo "| applicationId | \`$( [ "${{ env.IS_RELEASE }}" = "true" ] && echo "com.example.piliplus" || echo "com.example.piliplus.dev" )\` |"
                     echo "| versionName | \`${{ env.versionName }}\` |"
                     echo "| versionCode | \`${{ env.versionCode }}\` |"
                     echo "| release tag input | \`$RELEASE_TAG\` |"
                     echo "| signing | \`$( [ "${{ env.IS_RELEASE }}" = "true" ] && echo "release keystore" || echo "dev/debug" )\` |"
                     echo "| formal release created | \`${{ env.IS_RELEASE }}\` |"
+                    if [ "${{ env.IS_RELEASE }}" = "true" ]; then
+                      match="unknown"
+                      if [ -n "${{ env.expectedCertSha256 }}" ] && [ "${{ env.expectedCertSha256 }}" = "${{ env.keystoreCertSha256 }}" ] && [ "${{ env.expectedCertSha256 }}" = "${{ env.apkCertSha256 }}" ]; then
+                        match="true"
+                      elif [ -n "${{ env.expectedCertSha256 }}" ]; then
+                        match="false"
+                      fi
+                      echo "| expected signing cert SHA-256 | \`${{ env.expectedCertSha256 }}\` |"
+                      echo "| keystore cert SHA-256 | \`${{ env.keystoreCertSha256 }}\` |"
+                      echo "| final APK cert SHA-256 | \`${{ env.apkCertSha256 }}\` |"
+                      echo "| all three match | \`$match\` |"
+                    fi
                     echo ""
                     echo "| APK | size (bytes) | SHA-256 |"
                     echo "|---|---:|---|"

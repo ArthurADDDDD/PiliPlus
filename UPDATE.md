@@ -1,5 +1,65 @@
 # Update
 
+## 2026-07-10（第十二轮）
+
+### 沿用现有签名密钥 + 证书指纹锁定（代码完成，待用户配置 Secrets/Variable 并实测）
+
+- 修正上一轮文档里隐含的结论："当前 APK 用 debug.keystore 签名，所以必须新建
+  release key 并卸载重装"——这个结论不对。Android 判断能否覆盖安装只看
+  `applicationId` + 签名证书是否一致，跟密钥文件叫 `debug.keystore` 还是
+  `release.jks`、alias 叫 `androiddebugkey` 还是别的名字**无关**。用户本地
+  审计确认了当前安装 APK 的证书 SHA-256（`2d02cc05ff51a2b2c020fe41cc764d3a
+  a77b0d18448807e78a9b447505a1e349`）与本地仍然保留的
+  `C:\Users\...\.android\debug.keystore`（alias `androiddebugkey`）完全对应，
+  因此只要 GitHub Actions 用**同一个** keystore 文件和 alias 签名，就能继续
+  产生能覆盖当前安装的正式 Release，不需要卸载、不会丢失数据。
+- `docs/RELEASE_GUIDE.md` 第 1 节据此重写为「方案 A（推荐，沿用现有签名，
+  免卸载迁移）/ 方案 B（新建专用 release key，首次需卸载）」两选一，
+  明确写清楚方案 A 的风险（debug 密钥通常弱密码，安全性依赖文件不泄漏，
+  不适合大规模公开商业分发）——但对个人维护的私有 fork 可接受，前提是
+  风险写清楚，不隐瞒。
+- 新增签名证书指纹锁定，防止以后误传另一把有效但不同的 keystore：
+  - 新增 `lib/scripts/signing_fingerprint.ps1`：可 dot-source 复用的纯
+    PowerShell 库，`ConvertTo-NormalizedFingerprint`（统一转小写、去冒号/
+    空格、校验 64 位十六进制）、`Test-FingerprintMatch`、
+    `ConvertFrom-KeytoolCertOutput`/`ConvertFrom-ApksignerCertOutput`
+    （从 `keytool -list -v`/`apksigner verify --print-certs` 的文本输出里
+    解析 SHA-256 行）为纯函数，`Get-KeystoreCertFingerprint`/
+    `Get-ApkCertFingerprint` 为调用 keytool/apksigner 的薄封装。不引入
+    Pester 等第三方依赖。
+  - 新增 `lib/scripts/signing_fingerprint.tests.ps1`：不依赖任何框架的
+    离线测试脚本，覆盖：小写无冒号、大写无冒号、大写带冒号、前后空格、
+    内部空格、非法字符、少于/多于 64 位、空/null 输入、指纹一致、指纹
+    不一致（含两侧任一格式非法的情况）、keytool 输出解析成功/失败、
+    apksigner 输出解析成功/失败、端到端"跟 EXPECTED_SIGNING_CERT_SHA256
+    风格输入比对"场景。**本轮沙箱环境没有 `pwsh`，无法实际运行**（与上一轮
+    `release_version.ps1` 同样的限制），只做了逐行人工审阅，需要在有
+    `pwsh` 的环境（本地或 CI）里实际跑一遍才能确认真正通过。
+  - `.github/workflows/build.yml` 正式发布路径新增：
+    1. 读取新的 Repository **Variable**（不是 Secret，证书指纹本身不是
+       秘密）`EXPECTED_SIGNING_CERT_SHA256`，构建前先校验格式合法。
+    2. 写入 keystore 之后、Flutter 构建之前，用 `keytool` 读取实际证书
+       指纹，与预期比对，不一致直接失败（不会浪费一次完整构建才发现
+       传错了 keystore）。
+    3. APK 构建完成后，用 `apksigner` 再读一次每个 APK 的实际证书指纹，
+       与预期比对，不一致直接失败（防止 Gradle 实际用错 signingConfig
+       这种"keystore 本身没问题、但没生效"的情况）。
+    4. 以上任一环节缺配置/格式非法/alias 不存在/keystore 打不开/指纹不
+       一致，都会让 workflow 失败，不构建正式 Release、不上传正式 APK、
+       不创建 tag、不创建 Release、不回退 debug 签名——错误信息包含
+       期望/实际指纹，不输出密码/Base64/私钥内容。
+  - Job summary 新增字段：`applicationId`、预期证书 SHA-256、keystore 实际
+    证书 SHA-256、最终 APK 证书 SHA-256、三者是否一致。
+- 文档同步更新 `docs/RELEASE_GUIDE.md`（新增 1.1 方案 A 全套步骤——备份、
+  确认证书、转 Base64、配置 4 个 Secret + 1 个 Variable；1.2 方案 B；
+  新增「5. 版本兼容说明」写明当前安装 versionCode 是 `1`）、`README.md`、
+  `TODO.md`、`AGENT_HANDOFF.md`。
+- **本轮没有**：读取用户本地文件、要求用户上传 keystore 或粘贴 Base64、
+  触发任何 GitHub Actions、配置任何 Secrets/Variables、创建 tag、创建
+  Release、安装 APK、运行 ADB、合并到 `main`、生成新的 keystore、修改
+  证书指纹的实际值（`2d02cc05ff51a2b2c020fe41cc764d3aa77b0d18448807e78
+  a9b447505a1e349` 原样引用自用户提供的本地审计结果）。
+
 ## 2026-07-10（第十一轮）
 
 ### PiP 关闭态误恢复播放（小修复，代码完成，待真机验证）

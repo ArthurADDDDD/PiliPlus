@@ -2,29 +2,47 @@
 
 ## P0：应用内自更新 + GitHub Release 发布闭环（代码完成，待用户执行）
 
-代码/workflow 已完成，详见 UPDATE.md「第十一轮」与 `docs/RELEASE_GUIDE.md`。
-以下步骤必须由用户在自己账号下手动完成，Agent 会话不会代为执行：
+代码/workflow 已完成，详见 UPDATE.md「第十一轮」「第十二轮」与
+`docs/RELEASE_GUIDE.md`。以下步骤必须由用户在自己账号下手动完成，
+Agent 会话不会代为执行：
 
-- [ ] 按 `docs/RELEASE_GUIDE.md` 第 1 节，本地生成 release keystore，
-      在 `https://github.com/ArthurADDDDD/PiliPlus/settings/secrets/actions`
+- [ ] 按 `docs/RELEASE_GUIDE.md` 第 1 节选定签名方案（推荐方案 A：
+      沿用本地审计已确认的现有签名 `C:\Users\...\.android\debug.keystore`，
+      alias `androiddebugkey`，免卸载迁移）。
+- [ ] 备份该 keystore 至少两份离线副本（不要移动/删除原文件），转成
+      Base64，在
+      `https://github.com/ArthurADDDDD/PiliPlus/settings/secrets/actions`
       配置 `SIGN_KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` /
-      `KEY_PASSWORD` 四个 Secrets。
+      `KEY_PASSWORD` 四个 Secrets，配完删除明文 Base64 临时文件。
+- [ ] 在
+      `https://github.com/ArthurADDDDD/PiliPlus/settings/variables/actions`
+      配置 `EXPECTED_SIGNING_CERT_SHA256`（方案 A 已知值：
+      `2d02cc05ff51a2b2c020fe41cc764d3aa77b0d18448807e78a9b447505a1e349`，
+      不是秘密，可以公开）。
 - [ ] 确认 `pubspec.yaml` 的 `version:` 改成正式版本号（当前仍是占位的
-      `2.0.9+1`），格式 `<name>+<buildNumber>`，`buildNumber` 需比之前更大。
-- [ ] 在 GitHub Actions 手动触发 Build workflow，`tag` 填与 pubspec.yaml
-      版本一致的值（如 `v2.0.9+5103`），完成**第一次**正式 Release。
+      `2.0.9+1`），格式 `<name>+<buildNumber>`，`buildNumber` 需大于 `1`
+      （本地审计确认的当前安装 versionCode 是 `1`）。
+- [ ] 合并到 `main`，在 GitHub Actions 手动触发 Build workflow，`tag`
+      填与 pubspec.yaml 版本一致的值（如 `v2.0.9+5103`），完成
+      **第一次**正式 Release。
 - [ ] 确认 workflow 的 job summary 显示 "signing: release keystore"
-      （不是 "dev/debug"），Release 页面有 arm64-v8a/armeabi-v7a/x86_64
-      三个 APK 和 `SHA256SUMS.txt`。
-- [ ] 在一台已安装旧版 fork APK 的手机上验证：自动检查更新弹窗正确出现、
-      弹窗信息（tag/名称/说明/时间/版本号）完整、点「下载更新」正确打开
-      arm64-v8a 的下载链接、能正常安装覆盖升级（或确认签名不一致时的
-      报错行为符合预期）。
-- [ ] 验证"tag 与 pubspec.yaml 版本不一致"、"缺签名 secret"、"tag 已存在"
-      三种场景下 workflow 确实会失败且不创建 Release（哪怕只手动试一种
+      （不是 "dev/debug"）、"expected/keystore/final APK 三个证书
+      SHA-256" 一致、"all three match: true"，Release 页面有
+      arm64-v8a/armeabi-v7a/x86_64 三个 APK 和 `SHA256SUMS.txt`。
+- [ ] 在已安装现有版本（`com.example.piliplus`，versionCode `1`）的
+      Pixel 10 Pro 上验证：自动检查更新弹窗正确出现、弹窗信息（tag/名称/
+      说明/时间/版本号）完整、点「下载更新」正确打开 arm64-v8a 的下载
+      链接、能正常**覆盖安装**（不弹"签名冲突"、不要求先卸载、本地数据
+      保留）。
+- [ ] 验证"tag 与 pubspec.yaml 版本不一致"、"缺签名 secret"、
+      "tag 已存在"、"证书指纹与 EXPECTED_SIGNING_CERT_SHA256 不一致"
+      四种场景下 workflow 确实会失败且不创建 Release（哪怕只手动试一种
       也好，用来确认 preflight 真的在生效，不是只在代码里看着对）。
+- [ ] 发第二个正式版本（更高 buildNumber），验证第一版收到的自动更新
+      提示确实生效、能正常升级到第二版。
 
-以上完成前，**不得**在任何地方宣称"自更新已经过实机验证"。
+以上完成前，**不得**在任何地方宣称"自更新已经过实机验证"或
+"覆盖安装已经过实机验证"。
 
 ## P0：真机验证「返回键进入原生画中画」（PipShell，路线 C）
 

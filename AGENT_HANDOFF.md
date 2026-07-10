@@ -181,25 +181,84 @@ device testing -- all explicitly out of scope per the task).
   `!/test/` negation so the standard Flutter test directory is trackable
   again without dropping whatever the original rule was protecting against.
 
+**2026-07-10 second follow-up round: existing-key reuse + certificate
+fingerprint pinning.** The user did their own local audit and found the
+APK currently installed on their device is signed by a certificate
+(SHA-256 `2d02cc05ff51a2b2c020fe41cc764d3aa77b0d18448807e78a9b447505a1e349`)
+matching a keystore still on their machine
+(`C:\Users\...\.android\debug.keystore`, alias `androiddebugkey`). The
+earlier round's guidance implicitly pushed toward "generate a brand-new
+release keystore," which would have forced an unnecessary uninstall/data
+loss. Corrected: Android's override-install check only cares about
+`applicationId` + certificate match, not what the keystore file is named
+or whether it's nominally a "debug" key -- reusing that exact keystore as
+the permanent signing key (Plan A in `docs/RELEASE_GUIDE.md` section 1,
+now the recommended path) avoids the uninstall entirely, at the accepted
+cost that a "debug" keystore's password strength is typically weaker
+(explicitly documented, not hidden).
+
+To guard against a *different* valid keystore being mistakenly configured
+later (e.g. swapping in Plan B's keystore while believing it's still Plan
+A's), added a certificate-fingerprint pinning layer:
+
+- `lib/scripts/signing_fingerprint.ps1`: dot-sourceable, dependency-free
+  (no Pester) PowerShell library with pure functions
+  (`ConvertTo-NormalizedFingerprint`, `Test-FingerprintMatch`,
+  `ConvertFrom-KeytoolCertOutput`, `ConvertFrom-ApksignerCertOutput`) and
+  thin impure wrappers that shell out to `keytool`/`apksigner`
+  (`Get-KeystoreCertFingerprint`, `Get-ApkCertFingerprint`).
+  `lib/scripts/signing_fingerprint.tests.ps1` exercises the pure functions
+  offline with hand-built keytool/apksigner-shaped text -- **could not be
+  executed in this sandbox** (no `pwsh` available, same limitation as the
+  earlier `release_version.ps1` round), verified only by careful manual
+  read-through; needs a real `pwsh` run before being trusted.
+- `.github/workflows/build.yml`'s release path now reads a new
+  **Repository Variable** (not a Secret -- fingerprints aren't sensitive)
+  `EXPECTED_SIGNING_CERT_SHA256`, validates its format before doing
+  anything else, re-derives the actual keystore's certificate fingerprint
+  right after decoding it (before the Flutter build even starts) and
+  fails closed on any mismatch, then re-derives each built APK's actual
+  certificate fingerprint via `apksigner` after the build and fails closed
+  again if either the keystore-stage or APK-stage fingerprint doesn't
+  match. All three values (expected/keystore/APK) plus applicationId are
+  written to the job summary, never a password/Base64/private key.
+- `docs/RELEASE_GUIDE.md` restructured: section 1 now explicitly offers
+  Plan A (reuse existing signing, recommended for this user) vs. Plan B
+  (new dedicated key, forces one uninstall), with the risk tradeoffs of
+  Plan A spelled out; new backup/confirm/base64/secrets/variable
+  sub-steps mirroring the user's actual Windows workflow; new section 5
+  ("版本兼容说明") stating the currently-audited installed APK's
+  `versionCode: 1` and why any real release's build number trivially
+  clears that bar.
+
 **What's actually still needed, none of which this round did:**
 
-- Configure the 4 GitHub Actions secrets on `ArthurADDDDD/PiliPlus`.
+- Configure the 4 GitHub Actions secrets **and** the
+  `EXPECTED_SIGNING_CERT_SHA256` Repository Variable on
+  `ArthurADDDDD/PiliPlus`.
 - Bump `pubspec.yaml`'s `version:` (currently the placeholder `2.0.9+1`) to
   a real `<name>+<buildNumber>` and commit it to `main`.
 - Manually trigger the workflow with a matching tag to produce the fork's
-  **first-ever** GitHub Release (confirmed via the GitHub API this round:
-  zero releases exist today).
-- Verify on an actual device with an older fork build installed: the update
-  dialog appears, its content is correct, "download update" opens the right
-  arm64-v8a asset, and the install/override flow behaves as documented (or
-  fails the way `docs/RELEASE_GUIDE.md` predicts if the signing cert
-  doesn't match what's currently installed).
-- Manually confirm at least one of the three failure-closed preflight paths
-  (mismatched tag, missing secrets, duplicate tag) actually fails the
-  workflow in practice, not just on paper.
+  **first-ever** GitHub Release (confirmed via the GitHub API in the prior
+  round: zero releases exist today; not re-checked this round per the
+  "don't trigger anything" constraint).
+- Verify on an actual device with the currently-installed build: the
+  update dialog appears, its content is correct, "download update" opens
+  the right arm64-v8a asset, and the install genuinely **overrides**
+  (does not prompt about a signature conflict, does not require an
+  uninstall, local data survives).
+- Manually confirm each of the four failure-closed preflight paths
+  (mismatched tag, missing secrets, duplicate tag, certificate fingerprint
+  mismatch) actually fails the workflow in practice, not just on paper.
+- Publish a second release with a higher build number and confirm the
+  first release's install actually receives and can act on the update
+  prompt (validates the full loop, not just the first install).
+- Run `lib/scripts/signing_fingerprint.tests.ps1` somewhere with real
+  `pwsh` -- it was written and manually reviewed but never executed.
 
-Do not claim self-update has been validated end-to-end until the above is
-done by a human with real GitHub Actions access and a real device.
+Do not claim self-update, override-install, or the fingerprint pinning
+has been validated end-to-end until the above is done by a human with
+real GitHub Actions access and a real device.
 
 ### 5. Power/thermal instrumentation (tool finished, needs Pixel 10 Pro measurements)
 
