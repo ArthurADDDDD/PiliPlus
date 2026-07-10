@@ -886,14 +886,14 @@ class PlPlayerController with BlockConfigMixin {
     );
   }
 
-  Future<void>? refreshPlayer() {
+  Future<void>? refreshPlayer({bool play = true}) {
     if (dataSource is FileSource) {
       return null;
     }
     if (_videoPlayerController case final ctr? when (ctr.current.isNotEmpty)) {
       return ctr.open(
         ctr.current.last.copyWith(start: ctr.state.position),
-        play: true,
+        play: play,
       );
     }
     return null;

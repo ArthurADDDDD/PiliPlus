@@ -20,39 +20,48 @@ on:
             build_ios:
                 description: "Build iOS"
                 required: false
-                default: true
+                default: false
                 type: boolean
 
             build_mac:
                 description: "Build Mac"
                 required: false
-                default: true
+                default: false
                 type: boolean
 
             build_win_x64:
                 description: "Build Win-x64"
                 required: false
-                default: true
+                default: false
                 type: boolean
 
             build_linux_x64:
                 description: "Build Linux-x64"
                 required: false
-                default: true
+                default: false
                 type: boolean
 
             tag:
-                description: "tag"
+                description: "正式发布 tag（如 v2.0.9+5103）。留空 = 仅测试构建，不创建 Release，不会被 App 更新检查发现。"
                 required: false
                 default: ""
                 type: string
 
 jobs:
     android:
-        if: ${{ (github.event_name == 'pull_request' && github.repository == 'bggRGjQaUbCoE/PiliPlus') || github.event.inputs.build_android == 'true' }}
-        name: Release Android
+        # PR：本仓库的 PR 都可以跑 Android 编译验证（不再限定上游仓库）。
+        # workflow_dispatch：tag 留空 = 测试构建（仅 Actions artifact）；
+        #                    tag 非空 = 正式签名 Release（见下方 preflight）。
+        if: ${{ github.event_name == 'pull_request' || github.event.inputs.build_android == 'true' }}
+        name: Build Android
         runs-on: ubuntu-latest
-        permissions: write-all
+        permissions:
+            contents: write
+        env:
+            # 只有 workflow_dispatch 且 tag 非空时才是"正式发布"。PR 事件下
+            # 这个值恒为 'false'，因此下面所有读取 release secrets / 创建
+            # Release 的步骤在 PR 场景下结构性地不可达，不需要额外判断。
+            IS_RELEASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && 'true' || 'false' }}
 
         steps:
             - name: 代码迁出
@@ -82,69 +91,173 @@ jobs:
               shell: pwsh
               run: lib/scripts/patch.ps1 android
 
-            - name: Write key
-              if: github.event_name == 'workflow_dispatch'
+            # ---------------------------------------------------------------
+            # 正式发布 preflight：任何一项失败都必须让 workflow 失败，
+            # 不得静默回退到测试签名，也不得继续创建 Release。
+            # ---------------------------------------------------------------
+
+            - name: "[Release] Preflight: 校验必须在 workflow_dispatch 且非 PR"
+              if: ${{ env.IS_RELEASE == 'true' }}
               run: |
-                  if [ ! -z "${{ secrets.SIGN_KEYSTORE_BASE64 }}" ]; then
-                    echo "${{ secrets.SIGN_KEYSTORE_BASE64 }}" | base64 --decode > android/app/key.jks
-                    echo storeFile='key.jks' >> android/key.properties
-                    echo storePassword='${{ secrets.KEYSTORE_PASSWORD }}' >> android/key.properties
-                    echo keyAlias='${{ secrets.KEY_ALIAS }}' >> android/key.properties
-                    echo keyPassword='${{ secrets.KEY_PASSWORD }}' >> android/key.properties
+                  if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+                    echo "::error::formal release must run via workflow_dispatch"
+                    exit 1
                   fi
 
-            - name: Set and Extract version
-              if: ${{ github.event_name == 'workflow_dispatch' }}
+            - name: "[Release] Preflight: 校验签名 secrets 齐全"
+              if: ${{ env.IS_RELEASE == 'true' }}
+              run: |
+                  missing=()
+                  [ -z "${{ secrets.SIGN_KEYSTORE_BASE64 }}" ] && missing+=("SIGN_KEYSTORE_BASE64")
+                  [ -z "${{ secrets.KEYSTORE_PASSWORD }}" ] && missing+=("KEYSTORE_PASSWORD")
+                  [ -z "${{ secrets.KEY_ALIAS }}" ] && missing+=("KEY_ALIAS")
+                  [ -z "${{ secrets.KEY_PASSWORD }}" ] && missing+=("KEY_PASSWORD")
+                  if [ ${#missing[@]} -ne 0 ]; then
+                    echo "::error::missing required release signing secrets: ${missing[*]}. A formal release must fail closed instead of falling back to debug signing. See docs/RELEASE_GUIDE.md."
+                    exit 1
+                  fi
+
+            - name: "[Release] Preflight: tag 必须与 pubspec.yaml 版本一致"
+              if: ${{ env.IS_RELEASE == 'true' }}
+              shell: pwsh
+              env:
+                  RELEASE_TAG: ${{ github.event.inputs.tag }}
+              run: lib/scripts/release_version.ps1 -Tag $env:RELEASE_TAG
+
+            - name: "[Release] Preflight: tag 不得已存在（禁止覆盖已发布正式版本）"
+              if: ${{ env.IS_RELEASE == 'true' }}
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RELEASE_TAG: ${{ github.event.inputs.tag }}
+              run: |
+                  if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+                    echo "::error::release $RELEASE_TAG already exists. Refusing to overwrite an existing formal release; delete it manually first if this was truly intentional."
+                    exit 1
+                  fi
+
+            - name: "[Test build] Set and Extract version"
+              if: ${{ env.IS_RELEASE != 'true' && github.event_name == 'workflow_dispatch' }}
               shell: pwsh
               run: lib/scripts/build.ps1 android
 
-            - name: Flutter Build Release Apk
-              if: ${{ github.event_name == 'workflow_dispatch' }}
+            # ---------------------------------------------------------------
+            # 签名：正式发布用固定 release keystore；PR/测试构建永远不接触
+            # release secrets（IS_RELEASE 在这些场景下恒为 false，见上）。
+            # ---------------------------------------------------------------
+
+            - name: "[Release] 写入正式签名 keystore"
+              if: ${{ env.IS_RELEASE == 'true' }}
+              run: |
+                  echo "${{ secrets.SIGN_KEYSTORE_BASE64 }}" | base64 --decode > android/app/key.jks
+                  echo storeFile='key.jks' >> android/key.properties
+                  echo storePassword='${{ secrets.KEYSTORE_PASSWORD }}' >> android/key.properties
+                  echo keyAlias='${{ secrets.KEY_ALIAS }}' >> android/key.properties
+                  echo keyPassword='${{ secrets.KEY_PASSWORD }}' >> android/key.properties
+
+            - name: Flutter Build - 正式 Release Apk
+              if: ${{ env.IS_RELEASE == 'true' }}
               run: flutter build apk --release --split-per-abi --dart-define-from-file=pili_release.json --pub
 
-            - name: Flutter Build Dev Apk
+            - name: Flutter Build - workflow_dispatch 测试 Apk（tag 留空）
+              if: ${{ env.IS_RELEASE != 'true' && github.event_name == 'workflow_dispatch' }}
+              run: flutter build apk --release --split-per-abi --android-project-arg dev=1 --dart-define-from-file=pili_release.json --pub
+
+            - name: Flutter Build - PR 编译验证 Apk
               if: ${{ github.event_name == 'pull_request' }}
-              run: |
-                  flutter build apk --release --split-per-abi --android-project-arg dev=1 --pub
+              run: flutter build apk --release --split-per-abi --android-project-arg dev=1 --pub
 
             - name: Rename
               run: |
+                  prefix="PiliPlus_android"
+                  if [ "${{ env.IS_RELEASE }}" != "true" ]; then
+                    prefix="PiliPlus_android_dev"
+                  fi
                   for file in build/app/outputs/flutter-apk/app-*-release.apk; do
                     abi=$(echo "$file" | sed -E 's|.*app-(.*)-release\.apk|\1|')
-                    mv "$file" "PiliPlus_android_${{ env.version }}_${abi}.apk"
+                    mv "$file" "${prefix}_${{ env.version }}_${abi}.apk"
                   done
               shell: bash
 
-            - name: Release
-              if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
+            - name: "[Release] 校验 APK 签名（apksigner）"
+              if: ${{ env.IS_RELEASE == 'true' }}
+              run: |
+                  set -o pipefail
+                  build_tools_dir=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -n1)
+                  apksigner="${build_tools_dir}apksigner"
+                  fail=0
+                  for apk in PiliPlus_android_*.apk; do
+                    echo "== $apk =="
+                    if ! "$apksigner" verify --verbose --print-certs "$apk" | tee "${apk}.apksigner.txt"; then
+                      echo "::error::apksigner verify failed for $apk"
+                      fail=1
+                    fi
+                    cert_sha256=$(grep -m1 "Signer #1 certificate SHA-256 digest" "${apk}.apksigner.txt" | awk '{print $NF}')
+                    echo "cert_sha256_${apk}=${cert_sha256}" >> "$GITHUB_ENV"
+                  done
+                  if [ "$fail" -ne 0 ]; then
+                    echo "::error::one or more APKs failed signature verification; refusing to publish a formal release with an unverifiable APK"
+                    exit 1
+                  fi
+
+            - name: Generate checksums
+              run: sha256sum PiliPlus_android_*.apk | tee SHA256SUMS.txt
+
+            - name: Job summary
+              if: always()
+              env:
+                  RELEASE_TAG: ${{ github.event.inputs.tag }}
+              run: |
+                  {
+                    echo "### Android build summary"
+                    echo ""
+                    echo "| field | value |"
+                    echo "|---|---|"
+                    echo "| commit | \`${{ github.sha }}\` |"
+                    echo "| branch/ref | \`${{ github.ref_name }}\` |"
+                    echo "| versionName | \`${{ env.versionName }}\` |"
+                    echo "| versionCode | \`${{ env.versionCode }}\` |"
+                    echo "| release tag input | \`$RELEASE_TAG\` |"
+                    echo "| signing | \`$( [ "${{ env.IS_RELEASE }}" = "true" ] && echo "release keystore" || echo "dev/debug" )\` |"
+                    echo "| formal release created | \`${{ env.IS_RELEASE }}\` |"
+                    echo ""
+                    echo "| APK | size (bytes) | SHA-256 |"
+                    echo "|---|---:|---|"
+                    for apk in PiliPlus_android_*.apk; do
+                      [ -f "$apk" ] || continue
+                      size=$(stat -c%s "$apk")
+                      sha=$(sha256sum "$apk" | cut -d' ' -f1)
+                      echo "| \`$apk\` | $size | \`$sha\` |"
+                    done
+                  } >> "$GITHUB_STEP_SUMMARY"
+              # 不输出 keystore Base64、密码或证书私钥内容，只输出上表这些
+              # 非敏感字段。
+
+            - name: "[Release] 创建 GitHub Release"
+              if: ${{ env.IS_RELEASE == 'true' }}
               uses: softprops/action-gh-release@v3
               with:
                   tag_name: ${{ github.event.inputs.tag }}
                   name: ${{ github.event.inputs.tag }}
-                  files: PiliPlus_android_*.apk
+                  target_commitish: ${{ github.sha }}
+                  generate_release_notes: true
+                  draft: false
+                  prerelease: false
+                  fail_on_unmatched_files: true
+                  files: |
+                      PiliPlus_android_*.apk
+                      SHA256SUMS.txt
 
-            - name: 上传
+            - name: "[Test build] 上传 Actions artifact（非正式发布，不会被 App 更新检查发现）"
+              if: ${{ env.IS_RELEASE != 'true' }}
               uses: actions/upload-artifact@v7
               with:
                   archive: false
-                  name: Android_arm64-v8a
-                  path: PiliPlus_android_*_arm64-v8a.apk
-
-            - name: 上传
-              uses: actions/upload-artifact@v7
-              with:
-                  archive: false
-                  name: Android_armeabi-v7a
-                  path: PiliPlus_android_*_armeabi-v7a.apk
-
-            - name: 上传
-              uses: actions/upload-artifact@v7
-              with:
-                  archive: false
-                  name: Android_x86_64
-                  path: PiliPlus_android_*_x86_64.apk
+                  name: Android-test-build
+                  path: PiliPlus_android_dev_*.apk
 
     ios:
+        # 本次改动范围限定在 Android（见 4.1）；ios/win_x64 的 PR 触发条件
+        # 保持原样未动，避免影响未验证的其他平台构建。
         if: ${{ (github.event_name == 'pull_request' && github.repository == 'bggRGjQaUbCoE/PiliPlus') || github.event.inputs.build_ios == 'true' }}
         uses: ./.github/workflows/ios.yml
         permissions: write-all

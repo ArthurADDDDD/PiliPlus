@@ -74,7 +74,9 @@ app.*.map.json
 **/android/local.properties
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
+**/android/app/key.jks
 *.jks
+*.keystore
 
 # iOS/XCode related
 **/ios/**/*.mode1v3
@@ -150,6 +152,10 @@ pili_release.json
 dist
 
 /test*
+# Standard Flutter unit test directory -- unignore it specifically so
+# genuine tests (e.g. test/utils/update/) can be tracked; /test* above still
+# catches other stray root-level test scratch files/dirs.
+!/test/
 
 # Local temporary toolchains/caches used for this fork.
 # The actual current install path is outside this repo: D:\CodexTemp

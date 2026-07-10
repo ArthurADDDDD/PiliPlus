@@ -1,5 +1,130 @@
 # Update
 
+## 2026-07-10（第十一轮）
+
+### PiP 关闭态误恢复播放（小修复，代码完成，待真机验证）
+
+- 用户实测反馈：PiP 中已暂停的视频，拖到关闭区后会在后台重新开始播放；
+  播放中拖到关闭区则表现正常（正确暂停）。
+- 根因分析（未接入真机 logcat，基于代码走查的最可能解释）：PiP 展开/关闭
+  的原生检测在极少数时序下可能把"关闭"误判为"展开"，触发
+  `PipShell.onExpanded()` 走 `detachExternalSurfaceAndRestoreInternal()`；
+  当内部 Flutter surface 尚未就绪时会退回 `PlPlayerController.refreshPlayer()`
+  兜底重建输出——而 `refreshPlayer()` 原来**无条件** `play: true`，会把一个
+  本来暂停的播放器重新播放起来。播放中发生同样的误判不会被用户注意到
+  （反正本来就在播），暂停时则会被明显感知为"关闭后又开始放"。
+- 修复：`refreshPlayer()` 新增可选 `play` 参数（默认仍为 `true`，不影响
+  另一处调用方——直播/URL 断线重连场景，那里恢复播放是正确行为）；
+  `PipShell._restoreFlutterSurface()` 改为显式传入
+  `play: ctr.playerStatus.isPlaying`，按兜底触发那一刻的真实播放状态重建
+  输出，不再强制播放。
+- 涉及文件：`lib/plugin/pl_player/controller.dart`、
+  `lib/plugin/pl_player/pip_shell.dart`。
+- 本轮未连接真机，此修复未经实机验证；建议下一轮真机测试时补充这个具体
+  场景（PiP 中暂停 → 拖到关闭区 → 确认不会在后台重新播放）。
+
+### 应用内自更新 + GitHub Release 发布闭环（代码完成，待用户执行首次发布与实机验证）
+
+**更新检查逻辑重写**（`lib/utils/update.dart` +
+新增 `lib/utils/update/release_update_logic.dart`）：
+
+- 仓库 owner/name 集中定义到 `Constants.githubOwner`/`Constants.githubRepo`
+  （`lib/common/constants.dart`），`Api.latestRelease`（`lib/http/api.dart`）
+  与 `Constants.sourceCodeUrl` 都从这里派生，不再各自硬编码。
+- 请求端点从 `GET /releases`（取列表第一项）改为 `GET /releases/latest`
+  （单个最新正式 Release），天然排除 draft，GitHub 本身也不会在这个接口
+  返回 prerelease；`parseLatestReleaseResponse()` 额外做了 draft/prerelease
+  的防御性二次过滤（即便未来换成能拿到 draft/prerelease 的接口也不会误报）。
+  404（还没发布过 Release）与其他错误（网络失败、响应格式异常、GitHub 报错）
+  被明确分类，分别给用户不同提示，不再统一吞掉。
+- 版本比较不再依赖 `BuildConfig.buildTime < Release.created_at`：新增纯
+  `ReleaseVersion` 解析器，解析 `v2.0.9+5103` / `2.0.9+5103` 形式的 tag，
+  **只用 build number 整数比较**判断是否需要提示更新——build number 相等/
+  更小都不提示，只有严格更大才提示；tag 无法解析成 `<name>+<build>` 形式时
+  （例如老式无 build number 的 tag）才退回时间戳兜底比较，且在代码注释和
+  测试里都明确标注这是兼容性 fallback，不是主路径。
+- ABI → APK 资产匹配新增 `pickAndroidApkAsset()`：要求文件名同时"包含 ABI
+  字符串"且"以 `.apk` 结尾"，避免误选 `SHA256SUMS.txt` / `*.apk.sha256` /
+  `*.json` 等非 APK 文件；按 `supportedAbis` 顺序找第一个匹配项，找不到时
+  由 `Update.onDownload()` 回退打开 Release 的 `html_url`
+  （缺失时再退到 `releases/latest` 页面）。
+- 更新弹窗内容扩充：Release tag、名称、发布说明（body）、发布时间、
+  当前安装版本、新版本号，「下载更新」/「查看 Release」/「取消」三个按钮，
+  自动检查场景保留「不再提醒」。不再链接到 `commits/main`（改为直接链接
+  Release 页面，信息更完整）。
+- 以上纯逻辑部分（tag/版本解析、Release JSON 解析、更新判断、ABI 资产匹配）
+  全部抽成不依赖 Flutter UI/网络/全局状态的纯函数，新增 46 条离线单测
+  （`test/utils/update/release_update_logic_test.dart`），覆盖任务要求的
+  全部场景：build number 大于/等于/小于当前版本、tag 带/不带 `v`、无效/空
+  tag、极大 build number、versionName 变化但 build number 不变、
+  created_at 变化但版本不变、本地构建时间晚于 Release 但 Release 版本更高
+  仍应提示、正常/404/空/错误/缺 tag/缺 assets/draft/prerelease 的 Release
+  响应、精确 ABI 匹配、大小写差异、多个 APK、只有 checksum、无匹配回退、
+  第二 ABI 命中、不误选 `.sha256`/`.json`。
+
+**GitHub Actions 发布工作流重构**（`.github/workflows/build.yml` +
+新增 `lib/scripts/release_version.ps1`）：
+
+- Android job 的 PR 触发条件从"仅上游仓库"改为本仓库的 PR 都可以跑编译
+  验证；PR 构建结构性地不接触任何 release 签名 secret（`IS_RELEASE` 恒为
+  `false`，写 keystore 的步骤在 `IS_RELEASE == 'true'` 时才运行）。
+- `workflow_dispatch` 默认值改为只勾 `build_android`（其余四个平台默认
+  `false`），避免误触发全平台构建；`tag` 输入非空即视为正式发布。
+- 新增正式发布 preflight（任一失败都让 workflow 失败、不创建 Release、
+  不退回 debug 签名）：
+  1. 校验只能来自 `workflow_dispatch`（非 PR）。
+  2. 校验 `SIGN_KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/
+     `KEY_PASSWORD` 四个 secret 都非空。
+  3. 新增 `lib/scripts/release_version.ps1`：校验 tag 格式合法、且与
+     `pubspec.yaml` 当前 `version:` 字段的 `<name>+<build>` 完全一致
+     （不一致直接失败，不使用两套互相冲突的版本来源——正式发布只认
+     `pubspec.yaml`，不再像 `lib/scripts/build.ps1` 那样用
+     `git rev-list --count HEAD` 现算 build number；`build.ps1` 保持
+     不变，继续只用于 PR/测试构建）。
+  4. 用 `gh release view` 校验该 tag 尚未存在，禁止覆盖已发布的正式版本。
+- APK 构建后新增 `apksigner verify --verbose --print-certs` 签名校验，
+  失败即让 workflow 失败（不会发布未经验证签名的 APK）；新增
+  `SHA256SUMS.txt` 并随 APK 一起上传到 Release；新增 job summary，输出
+  commit/分支/versionName/versionCode/tag/签名类型/是否创建了 Release/
+  每个 APK 的文件名+大小+SHA-256，明确不输出 keystore Base64、密码或
+  证书私钥内容。
+- Release 创建改用 `target_commitish: ${{ github.sha }}`（固定到本次
+  workflow 实际构建的 commit）、`generate_release_notes: true`、
+  `draft: false`、`prerelease: false`、`fail_on_unmatched_files: true`；
+  job 权限从 `write-all` 收紧到 `contents: write`。
+- 测试构建（`workflow_dispatch` 但 tag 留空）使用 `.dev` applicationId、
+  文件名带 `PiliPlus_android_dev_` 前缀、只上传 Actions artifact、不创建
+  Release，job summary 会明确标注 "dev/debug" 签名，与正式发布包（
+  `com.example.piliplus`，release keystore 签名）在 applicationId 和签名
+  上都不同，可以同时安装、不会互相覆盖，也不会被 App 的更新检查发现。
+- `ios`/`mac`/`win_x64`/`linux_x64` 四个平台 job **未改动核心逻辑**
+  （本轮范围限定在 Android），只是继承了 `workflow_dispatch` 默认值的
+  调整（默认不再自动构建）。
+
+**签名安全**：
+
+- `.gitignore` 补充 `**/android/app/key.jks`、`*.keystore`
+  （原有 `**/android/key.properties`、`*.jks` 保留）；确认改动前后都没有
+  任何 keystore/key.properties 文件被 Git 跟踪。
+- 新增 [`docs/RELEASE_GUIDE.md`](../docs/RELEASE_GUIDE.md)：中文、面向不
+  熟悉 GitHub Actions 的个人维护者，说明如何本地生成 release keystore、
+  转 Base64 配置 4 个 GitHub Secrets（并提醒配置完删除明文 Base64 文件、
+  密钥不得上传仓库/不得发给 Agent）、旧签名不兼容时的表现与
+  `apksigner verify` 排查方法、完整正式发版步骤、测试构建与正式发布的
+  区别。
+
+**尚未执行、需要用户后续操作**：
+
+- 仓库尚未配置 `SIGN_KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/
+  `KEY_PASSWORD` 这 4 个 GitHub Secrets。
+- 尚未触发过一次正式发布（`ArthurADDDDD/PiliPlus` 目前仍是 0 个 Release）。
+- 本轮未合并到 `main`，未创建任何 tag，未触发任何 GitHub Actions，未创建
+  任何 Release，未上传任何 APK。
+- 检查更新弹窗、下载、覆盖安装、旧签名兼容性等**全部未在真机上验证过**。
+- workflow YAML 本轮只做了人工静态检查 + PyYAML 语法解析（沙箱环境没有
+  `actionlint`，按任务要求不为此扩大范围去安装），未经过 GitHub 真实
+  跑一次 workflow 的端到端验证。
+
 ## 2026-07-10（第十轮）
 
 ### 应用内检查更新改为指向本 fork（代码完成，待发布 Release 才生效）

@@ -1,5 +1,31 @@
 # TODO
 
+## P0：应用内自更新 + GitHub Release 发布闭环（代码完成，待用户执行）
+
+代码/workflow 已完成，详见 UPDATE.md「第十一轮」与 `docs/RELEASE_GUIDE.md`。
+以下步骤必须由用户在自己账号下手动完成，Agent 会话不会代为执行：
+
+- [ ] 按 `docs/RELEASE_GUIDE.md` 第 1 节，本地生成 release keystore，
+      在 `https://github.com/ArthurADDDDD/PiliPlus/settings/secrets/actions`
+      配置 `SIGN_KEYSTORE_BASE64` / `KEYSTORE_PASSWORD` / `KEY_ALIAS` /
+      `KEY_PASSWORD` 四个 Secrets。
+- [ ] 确认 `pubspec.yaml` 的 `version:` 改成正式版本号（当前仍是占位的
+      `2.0.9+1`），格式 `<name>+<buildNumber>`，`buildNumber` 需比之前更大。
+- [ ] 在 GitHub Actions 手动触发 Build workflow，`tag` 填与 pubspec.yaml
+      版本一致的值（如 `v2.0.9+5103`），完成**第一次**正式 Release。
+- [ ] 确认 workflow 的 job summary 显示 "signing: release keystore"
+      （不是 "dev/debug"），Release 页面有 arm64-v8a/armeabi-v7a/x86_64
+      三个 APK 和 `SHA256SUMS.txt`。
+- [ ] 在一台已安装旧版 fork APK 的手机上验证：自动检查更新弹窗正确出现、
+      弹窗信息（tag/名称/说明/时间/版本号）完整、点「下载更新」正确打开
+      arm64-v8a 的下载链接、能正常安装覆盖升级（或确认签名不一致时的
+      报错行为符合预期）。
+- [ ] 验证"tag 与 pubspec.yaml 版本不一致"、"缺签名 secret"、"tag 已存在"
+      三种场景下 workflow 确实会失败且不创建 Release（哪怕只手动试一种
+      也好，用来确认 preflight 真的在生效，不是只在代码里看着对）。
+
+以上完成前，**不得**在任何地方宣称"自更新已经过实机验证"。
+
 ## P0：真机验证「返回键进入原生画中画」（PipShell，路线 C）
 
 - 返回键 → 系统 PiP 直接出现（无全屏黑屏闪现）、上一页正常、播放/声音不间断。
@@ -25,6 +51,12 @@
   - 切换过程中拖到关闭区 → 正常停止，无残留播放器/Surface 引用。
 - 竖屏视频返回 → PiP 比例正确（9:16 类）。
 - 反复进出 PiP 多次 → 无 Surface 泄漏/崩溃（重点观察 logcat EGL/mpv 报错）。
+- **PiP 中已暂停 → 拖到关闭区不应恢复播放（第十一轮小修复，待真机验证）**：
+  用户实测反馈过这个具体 bug；已修复 `PlPlayerController.refreshPlayer()`
+  在 PiP surface 兜底重建路径上不再无条件 `play: true`，改为按当时真实
+  播放状态恢复。需要真机验证：PiP 中暂停 → 拖到关闭区 → 确认后台没有
+  重新开始播放；以及正常播放中拖到关闭区仍然正确暂停（不能因为这次修复
+  引入回归）。
 
 ## 已完成：返回键小窗播放（原 P0，路线 A）
 

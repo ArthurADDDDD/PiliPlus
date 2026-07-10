@@ -210,7 +210,9 @@ abstract final class PipShell {
     try {
       final restored = avc.detachExternalSurfaceAndRestoreInternal();
       if (!restored) {
-        ctr?.refreshPlayer();
+        // 按当前实际播放/暂停状态重建输出，不强制恢复播放：
+        // 用户在 PiP 中暂停后触发该兜底路径，不应该把视频重新播放起来。
+        ctr?.refreshPlayer(play: ctr.playerStatus.isPlaying);
       }
     } catch (e) {
       Utils.reportError(e);

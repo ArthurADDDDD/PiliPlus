@@ -104,6 +104,103 @@ Desired effect:
 - Power-saving defaults should be easy to disable.
 - User-chosen settings should not be overwritten except to disable known-bad experimental behavior.
 
+### 5b. PiP paused-then-dismissed resumes playback (small fix, needs on-device validation)
+
+User-reported (2026-07-10, mid-session): pausing a video while in native PiP
+and then dragging PiP to the dismiss target caused it to resume playing in
+the background; dragging to dismiss while actively playing correctly paused
+it. Root cause (best static-analysis guess, not confirmed via logcat):
+`PipShell._restoreFlutterSurface()`'s fallback path (used when the internal
+Flutter surface isn't ready yet) called `PlPlayerController.refreshPlayer()`,
+which unconditionally reopened the media with `play: true` -- if a PiP
+expand/close misdetection race fires this fallback for what was actually a
+dismiss (not an expand) of an already-paused player, it silently resumes
+playback with no visible video page to notice it on. Fixed:
+`refreshPlayer()` now takes an optional `play` parameter (default `true`,
+preserving its other call site's behavior -- a live-stream/URL reconnect
+retry, where forcing playback is correct); `PipShell` now passes
+`play: ctr.playerStatus.isPlaying` instead of relying on the default. Not
+validated on a device. If this turns out not to fully fix it, the next
+place to look is the actual expand-vs-close detection timing in
+`PipActivity.kt` (`onPictureInPictureModeChanged`/`onStop`), which this
+round didn't change.
+
+### 6. Self-update + GitHub Release publishing (code finished, needs first real release + on-device validation)
+
+2026-07-10 follow-up round: built a full self-update/release pipeline for
+this fork, entirely code + CI configuration, **nothing was actually
+published or run** (no GitHub Actions execution, no tag, no Release, no
+device testing -- all explicitly out of scope per the task).
+
+- `lib/utils/update/release_update_logic.dart`: pure version/tag parsing
+  (`ReleaseVersion`, `<name>+<buildNumber>` form), GitHub `releases/latest`
+  response classification (`LatestReleaseFound`/`NotFound`/`Error`, with
+  draft/prerelease filtering), the actual "should we prompt" decision
+  (`decideShouldPromptUpdate` -- build-number comparison as primary signal,
+  timestamp comparison as an explicitly-labeled fallback only when the tag
+  doesn't parse), and Android ABI-to-APK-asset matching
+  (`pickAndroidApkAsset`). 46 offline unit tests in
+  `test/utils/update/release_update_logic_test.dart`, all passing, covering
+  every scenario the task spec called out.
+- `lib/utils/update.dart` rewritten as the thin impure layer: hits
+  `Api.latestRelease` (now `GET /repos/ArthurADDDDD/PiliPlus/releases/latest`,
+  owner/repo centralized in `Constants.githubOwner`/`githubRepo`), classifies
+  the response, decides, and drives an expanded update dialog (tag, name,
+  body, published date, current vs. new version, download/view-release/
+  cancel buttons, "don't remind me again" preserved for the auto-check path).
+- `.github/workflows/build.yml` android job restructured into three
+  distinct paths: PR (compile verification only, this fork's own PRs now
+  allowed to trigger it, never touches release secrets), workflow_dispatch
+  with an empty tag (test build: `.dev` applicationId, debug/dev signing,
+  Actions-artifact-only, never becomes a Release), and workflow_dispatch
+  with a non-empty tag (formal release: fails closed if
+  `SIGN_KEYSTORE_BASE64`/`KEYSTORE_PASSWORD`/`KEY_ALIAS`/`KEY_PASSWORD` are
+  missing, if the tag doesn't exactly match `pubspec.yaml`'s
+  `<versionName>+<buildNumber>` -- validated by the new
+  `lib/scripts/release_version.ps1`, which deliberately does NOT reuse
+  `build.ps1`'s `git rev-list --count HEAD`-derived build number for
+  releases, to avoid two conflicting version sources -- or if the tag
+  already exists as a release). Formal releases get an `apksigner verify`
+  gate, a `SHA256SUMS.txt`, a job summary with commit/version/signing-type/
+  APK hashes (no secrets), and are created with `target_commitish:
+  github.sha`, `generate_release_notes: true`, non-draft, non-prerelease.
+  `workflow_dispatch` defaults now only auto-check `build_android`.
+- `docs/RELEASE_GUIDE.md` (Chinese, written for a non-CI-expert maintainer):
+  one-time release-keystore generation and GitHub Secrets setup, old-APK
+  signature-compatibility caveats (can't override-install across different
+  signing certs, `adb install -r -d` doesn't bypass this, losing the
+  keystore means future releases can't override-install), the exact formal
+  release steps, and the test-build vs. formal-release distinction.
+- `.gitignore` gained `**/android/app/key.jks` and `*.keystore` (existing
+  `**/android/key.properties` and `*.jks` were already there); verified
+  nothing matching any of these patterns is currently tracked.
+- `test/` (the main app's root test directory, not just
+  `third_party/media_kit_video/test/`) had to be un-ignored: the repo's
+  `.gitignore` had an upstream-inherited `test*` rule that blocked ANY
+  root-level `test/` directory. Narrowed to `/test*` plus an explicit
+  `!/test/` negation so the standard Flutter test directory is trackable
+  again without dropping whatever the original rule was protecting against.
+
+**What's actually still needed, none of which this round did:**
+
+- Configure the 4 GitHub Actions secrets on `ArthurADDDDD/PiliPlus`.
+- Bump `pubspec.yaml`'s `version:` (currently the placeholder `2.0.9+1`) to
+  a real `<name>+<buildNumber>` and commit it to `main`.
+- Manually trigger the workflow with a matching tag to produce the fork's
+  **first-ever** GitHub Release (confirmed via the GitHub API this round:
+  zero releases exist today).
+- Verify on an actual device with an older fork build installed: the update
+  dialog appears, its content is correct, "download update" opens the right
+  arm64-v8a asset, and the install/override flow behaves as documented (or
+  fails the way `docs/RELEASE_GUIDE.md` predicts if the signing cert
+  doesn't match what's currently installed).
+- Manually confirm at least one of the three failure-closed preflight paths
+  (mismatched tag, missing secrets, duplicate tag) actually fails the
+  workflow in practice, not just on paper.
+
+Do not claim self-update has been validated end-to-end until the above is
+done by a human with real GitHub Actions access and a real device.
+
 ### 5. Power/thermal instrumentation (tool finished, needs Pixel 10 Pro measurements)
 
 `tools/monitor_piliplus_power.py` (stdlib-only, no root, adb-based) and

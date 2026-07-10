@@ -1,6 +1,12 @@
 abstract final class Constants {
   static const appName = 'PiliPlus';
-  static const sourceCodeUrl = 'https://github.com/ArthurADDDDD/PiliPlus';
+
+  // 本 fork 的仓库 owner/name，集中定义一处，避免多个文件各自硬编码。
+  // 更新检查（Api.latestRelease）、源码/commit/issue 链接均从这里派生。
+  static const String githubOwner = 'ArthurADDDDD';
+  static const String githubRepo = 'PiliPlus';
+  static const String sourceCodeUrl =
+      'https://github.com/$githubOwner/$githubRepo';
 
   // 27eb53fc9058f8c3  移动端 Android
   // 4409e2ce8ffd12b8  HD版
