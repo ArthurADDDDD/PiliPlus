@@ -1,5 +1,31 @@
 # Update
 
+## 2026-07-10（第十三轮）
+
+### 准备第一次正式 Release：v2.0.9+2（仅准备，未发布）
+
+- `pubspec.yaml` 版本从 `2.0.9+1` 提升为 `2.0.9+2`，对应正式 Release tag
+  `v2.0.9+2`；`versionCode` 从 `1` 提升为 `2`，高于当前安装版本，满足覆盖
+  升级的前提。`applicationId` 保持 `com.example.piliplus` 不变。
+- 这将是本 fork 的**第一个**正式 GitHub Release，包含此前几轮积累的主要变化：
+  - 修复原生 PiP 中切换清晰度、分 P 或重新加载媒体后画面冻结的问题
+    （`AndroidVideoController` 外部 Surface 所有权状态机 + generation
+    竞争保护，`third_party/media_kit_video`）。
+  - 修复 PiP surface 恢复兜底路径可能意外把已暂停的视频重新播放起来的问题
+    （`PlPlayerController.refreshPlayer()` 尊重实际播放状态）。
+  - 新增功耗与发热监控工具（`tools/monitor_piliplus_power.py`）及配套测试
+    矩阵指南（`docs/POWER_TEST_GUIDE.md`）。
+  - 应用内检查更新改为只看本 fork（`ArthurADDDDD/PiliPlus`）的正式 Release，
+    不再指向上游仓库。
+  - 新增 GitHub Actions 正式发布 + 自更新闭环：tag 与 `pubspec.yaml` 版本
+    强校验、签名 secrets 缺失 fail-closed、`EXPECTED_SIGNING_CERT_SHA256`
+    证书指纹锁定（构建前后各校验一次）。
+- **仍然需要真机验证，本轮未做**：
+  - PiP 修复（分 P/清晰度切换、surface 恢复）仍需在 Pixel 10 Pro 上实测。
+  - 功耗/发热改善**尚未通过任何真实设备测试确认**，不得引用为已验证结论。
+  - 本轮只是版本号准备工作，**尚未创建 tag、尚未触发正式发布 workflow、
+    尚未创建 GitHub Release**。
+
 ## 2026-07-10（第十二轮）
 
 ### 沿用现有签名密钥 + 证书指纹锁定（代码完成，待用户配置 Secrets/Variable 并实测）
