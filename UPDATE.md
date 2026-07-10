@@ -1,5 +1,99 @@
 # Update
 
+## 2026-07-10（第十轮）
+
+### 原生 PiP 中媒体重新加载后冻结（代码完成，待真机验证）
+
+- 根因：`AndroidVideoController`（`third_party/media_kit_video`）由本 fork
+  配置为 `androidAttachSurfaceAfterVideoParameters: false`，导致
+  `onLoadHooks` 在每次媒体重新加载（分 P/清晰度/合集切换）后**无条件**把
+  输出重新挂回 Flutter 内部纹理的 `wid`——完全绕过了旧版 `externalSurfaceActive`
+  静态开关（该开关只在 `videoParams` 监听器里生效，`onLoadHooks` 从未检查过）。
+  实际效果：PiP 期间切分 P/清晰度会让 mpv 输出静默抢回一个没人合成的 Flutter
+  Surface，PiP 窗口画面冻结在旧帧（音频仍在播放）。
+- 修复：为 `AndroidVideoController` 新增完整的外部 surface 所有权状态机：
+  - `attachExternalSurface` / `updateExternalSurfaceSize` /
+    `detachExternalSurfaceAndRestoreInternal` / `releaseExternalSurface`
+    四个接口，取代原来的单个静态 bool。
+  - `onUnloadHooks` 现在只是把「重挂待定」标记置位，不再丢失外部接管状态；
+    `onLoadHooks` 与 `videoParams` 在媒体/Surface 就绪后自动把输出重新挂回
+    **当前**外部 surface（不是 PiP 进入前缓存的旧 wid），加载中允许按
+    libmpv 要求临时 `vo=null/wid=0`，加载完成后必定恢复
+    `wid → android-surface-size → vo=gpu`。
+  - 展开 PiP 时使用 `AndroidVideoController` 实时的内部 `wid`（而非
+    `PipShell` 自己缓存的旧 `_flutterWid`）做恢复，PiP 期间产生的新内部
+    Surface 也能被正确识别为「最新有效 Surface」。
+  - 用一个单调递增的 `LoadGeneration`（generation/token）识别陈旧的异步
+    `CreateSurface` 回调，防止其在 dispose 或更新的加载之后覆盖当前状态。
+  - 纯状态机逻辑（无 Flutter/FFI 依赖）抽到独立文件
+    `android_video_controller/external_surface_ownership.dart`，
+    `third_party/media_kit_video/test/` 新增 56 条离线单测覆盖：
+    正常内部播放、进入 PiP、PiP 中 unload/load、PiP 中连续多次切换、
+    陈旧回调到达、PiP 展开、PiP 关闭、新视频页接管、Surface 销毁。
+  - `lib/plugin/pl_player/pip_shell.dart` 改为使用新接口，不再直接读写
+    `AndroidVideoController` 的静态字段。
+- **本轮未连接真机，以上修复未经实机验证**，静态验证已完成：
+  `dart format` / `flutter analyze`（相对本任务改动的文件 0 个新增问题）/
+  相关 Dart 单测全部通过（详见下方“静态验证”小节）。
+
+### 新增：可重复使用的功耗/发热监控工具（工具完成，待 Pixel 10 Pro 实测）
+
+- 新增 `tools/monitor_piliplus_power.py`：纯标准库、不需要 root，通过本机
+  `adb` 定时采样。`record` 子命令采集电池电量/温度/`current_now`/
+  `voltage_now`/`charge_counter`/`energy_counter`（原始符号 + 绝对值 mA +
+  估算功率 W，明确标注为估算）、应用 PID/CPU/RSS、系统总 CPU、屏幕开关、
+  刷新率、PiP 状态、前台 Activity、热传感器（battery/skin/cpu/gpu/modem/
+  ThermalStatus）、decoder 提示、播放器相关错误计数；开始/结束各保存一份
+  `dumpsys battery/thermalservice/hardware_properties/display/
+  activity_activities/media.metrics/media.codec/gfxinfo/meminfo/
+  batterystats` 原始快照 + 过滤后的 logcat。任何字段读取失败都记为
+  `unavailable`，不会让整次采集崩溃。`compare` 子命令支持目录或通配符，
+  输出多组横向对比的 Markdown 表格，并主动标出时长不同/起始温度不同/
+  缺采样率过高等不可直接比较的情况。默认不执行 `batterystats --reset`、
+  不改亮度/刷新率、不切网络、不启停 App；`--reset-batterystats-before`
+  作为显式可选项存在并会打印警告。
+- 新增 `docs/POWER_TEST_GUIDE.md`：7 组测试矩阵（PiP 播放字幕/弹幕开关
+  各组合、全屏播放、后台听声音、PiP 暂停亮屏基线），明确字幕与弹幕是两条
+  不同渲染路径、不能混为一谈，并说明如何通过两两对比拆分出屏幕常亮/
+  视频解码/PiP 合成/字幕/弹幕各自的功耗增量。
+- 主要解析函数（`parse_dumpsys_battery`/`parse_power_supply_sysfs`/
+  `parse_cpuinfo`/`parse_meminfo_rss`/`parse_thermal_status`/
+  `parse_hardware_properties_temps`/`parse_foreground_activity`/
+  `parse_codec_hint`/`count_logcat_errors`/`build_summary_markdown`/
+  `build_compare_markdown` 等）有 56 条离线单元测试
+  （`tools/tests/test_monitor_piliplus_power.py`），全部基于 fixture 文本，
+  不需要连接设备即可运行，全部通过。
+- **本轮完全没有运行过这个工具**（任务明确要求不得执行任何 `adb` 命令/
+  不得检测手机是否连接），因此没有任何一条真实采样数据，也不能得出
+  "省电/降温" 之类的结论——这些结论必须等用户在 Pixel 10 Pro 上按指南
+  实测后才能下。
+
+### 静态验证
+
+- 本次改动涉及的 Dart 文件已用 `dart format` 格式化；未修改任何 Kotlin
+  文件（修复完全在 Dart/media_kit 层完成，未触及 `PipActivity.kt`）。
+- `flutter analyze`：相对本任务改动的三个文件（`pip_shell.dart`、
+  `android_video_controller/real.dart`、`external_surface_ownership.dart`）
+  0 个新增 info/warning/error；仓库其余部分原有 37 条历史 info 未处理
+  （均与本任务无关，未扩大修改范围去清零）。
+- `flutter test` / `dart test`：`third_party/media_kit_video/test/` 56
+  条单测全部通过；主仓库本身目前没有 `test/` 目录（本轮之前就没有）。
+- `python -m unittest discover -s tools/tests`：56 条单测全部通过。
+- 修 `.gitignore` 里过宽的 `test*` 规则为 `/test*`（原规则会在仓库任意
+  深度屏蔽 `test/` 目录，导致新增的 `third_party/media_kit_video/test/`
+  无法被提交；改为只在仓库根目录生效，不影响原规则本身想屏蔽的内容——
+  改动前仓库内没有任何被该规则实际跟踪/影响的文件）。
+- **未能完成**：`flutter build apk --release --split-per-abi
+  --target-platform android-arm64`。本轮运行在云端沙箱环境，已安装
+  Flutter 3.44.5（与仓库版本一致）并可正常 `pub get`/`analyze`/`test`，
+  但 Android SDK 的唯一官方分发渠道 `dl.google.com`/
+  `android.googlesource.com` 被该环境出站网络策略拒绝（确认为策略拒绝
+  而非超时），因此无法安装 Android SDK，构建止步于
+  "No Android SDK found"。仓库的 `.github/workflows/build.yml` 有
+  `workflow_dispatch` 手动触发的 android 构建+artifact 上传任务，是比
+  云端会话本地构建更可靠的路径，本轮未触发（触发 CI 是有外部可见影响的
+  操作，需要用户明确同意）。详见 AGENT_HANDOFF.md「Build Environment Note」。
+
 ## 2026-07-10（第九轮）
 
 ### 「个性化改动」设置页

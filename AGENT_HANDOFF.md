@@ -38,10 +38,32 @@ by the user, who wants true system-native PiP. Final approach ("Route C",
 - Key files: `android/.../PipActivity.kt`, `lib/plugin/pl_player/pip_shell.dart`,
   `AndroidHelper.buildPipParams/pipShellActivity`, `MainActivity.channel`.
 
-What remains: on-device validation (see TODO.md P0 checklist), especially
-surface swap stability (quality switch / episode switch while in PiP will
-re-attach output to the Flutter texture via media_kit onLoadHooks — the shell
-window would freeze; acceptable for now, PipShell.hide handles page takeover).
+What remains: on-device validation (see TODO.md P0 checklist).
+
+**2026-07-10 update**: the surface-swap-on-reload freeze described above
+(quality/episode switch during PiP re-attaching output to the Flutter
+texture, or leaving it detached, freezing the PiP window) has been fixed
+at the code level, not yet validated on-device. Root cause: PiliPlus'
+`_initPlayer()` configures `androidAttachSurfaceAfterVideoParameters:
+false`, which made `AndroidVideoController.onLoadHooks` unconditionally
+re-attach the *internal* Flutter `wid` on every media reload — completely
+bypassing the old `externalSurfaceActive` flag (which was only checked in
+the `videoParams` listener, not in `onLoadHooks`). Fix: replaced the single
+static bool with a real external-surface-ownership state machine on
+`AndroidVideoController` (`third_party/media_kit_video`):
+`attachExternalSurface` / `updateExternalSurfaceSize` /
+`detachExternalSurfaceAndRestoreInternal` / `releaseExternalSurface`, backed
+by a pure, unit-tested `ExternalSurfaceOwnership` + `LoadGeneration` class
+(`android_video_controller/external_surface_ownership.dart`, 56 offline
+tests in `third_party/media_kit_video/test/`). `onUnloadHooks` now marks a
+"reattach pending" flag instead of losing ownership; `onLoadHooks` and the
+`videoParams` listener re-attach the *current* external surface (never a
+stale cached `wid`) once the reload completes; expand-time restore always
+uses the controller's live internal `_wid`, not a value cached before PiP
+started. `pip_shell.dart` was rewired to this new API. Needs on-device
+validation: quality switch / episode switch / collection switch while in
+PiP should now update smoothly instead of freezing (see TODO.md for the
+specific checklist).
 
 ### 2. PiP Interaction Quality
 
@@ -82,16 +104,53 @@ Desired effect:
 - Power-saving defaults should be easy to disable.
 - User-chosen settings should not be overwritten except to disable known-bad experimental behavior.
 
-## Local Temporary Dependencies
+### 5. Power/thermal instrumentation (tool finished, needs Pixel 10 Pro measurements)
 
-The temporary dependencies installed on this machine are outside the repository:
+`tools/monitor_piliplus_power.py` (stdlib-only, no root, adb-based) and
+`docs/POWER_TEST_GUIDE.md` (a 7-scenario test matrix designed to separate
+screen-on / decode / PiP-composition / subtitle / danmaku power costs from
+each other) were added 2026-07-10. The tool's parsing functions have 56
+offline unit tests (`tools/tests/test_monitor_piliplus_power.py`, no device
+needed) and all pass. **The tool itself has never been run against a real
+device in this round** — there is zero actual measurement data, and no
+claim should be made anywhere that the PiP/power-saving changes have been
+shown to reduce heat or battery drain. That still needs a human to run
+`record`/`compare` on a Pixel 10 Pro per the guide.
 
-- `D:\CodexTemp\flutter_3.44.5_temp`
-- `D:\CodexTemp\android_sdk_temp`
-- `D:\CodexTemp\jdk17_temp`
-- `D:\CodexTemp\gradle_user_home_temp`
-- `D:\CodexTemp\pub_cache_temp`
-- `D:\CodexTemp\flutter_appdata_temp`
-- `D:\CodexTemp\flutter_localappdata_temp`
+## Build Environment Note (2026-07-10 round)
 
-These are temporary local tools/caches and should not be committed.
+This round ran in an Anthropic-managed cloud Ubuntu session, not the user's
+Windows machine referenced by earlier rounds' `D:\CodexTemp` paths. Flutter
+3.44.5 (matching the repo's pinned version) was installed at
+`/root/tooling/flutter` in that session and used for `pub get`/`format`/
+`analyze`/`test`, all of which passed with zero new issues. However, this
+session's outbound network policy blocks `dl.google.com` and
+`android.googlesource.com` (confirmed via 403 policy-denial responses in
+the egress proxy's own status log, not a timeout/cert issue) — those are
+Android's only distribution channels for SDK platform-tools/build-tools/
+NDK, so the Android SDK could not be installed and `flutter build apk`
+failed at "No Android SDK found". **No APK was produced this round.** The
+repo's `.github/workflows/build.yml` has a `workflow_dispatch`-triggered
+`android` job that builds and uploads arm64/armv7/x86_64 release APKs as
+workflow artifacts and is a more reliable path to an actual APK than a
+sandboxed agent session — it was not triggered this round (running CI has
+externally-visible side effects and needs explicit user go-ahead). Any
+future agent attempting a from-scratch APK build in a similarly-locked-down
+sandbox will hit the same wall; don't try to route around the blocked host,
+just report it, same as this round did.
+
+If run on a machine with real Android SDK access (the user's Windows
+machine, or a CI runner with `dl.google.com` reachable), the build itself
+is unchanged from what earlier rounds documented:
+
+```
+flutter pub get
+flutter build apk --release --split-per-abi --target-platform android-arm64
+```
+
+No key.properties/keystore exists in this repo or this session (it's
+gitignored and never was checked in) — a build in any fresh environment
+without the user's real keystore falls back to the Gradle debug signing
+config (`android/app/build.gradle.kts`: `signingConfig = config ?:
+signingConfigs["debug"]`), which will NOT overwrite an existing
+release-signed install on the user's device.
