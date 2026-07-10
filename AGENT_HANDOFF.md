@@ -208,10 +208,9 @@ A's), added a certificate-fingerprint pinning layer:
   thin impure wrappers that shell out to `keytool`/`apksigner`
   (`Get-KeystoreCertFingerprint`, `Get-ApkCertFingerprint`).
   `lib/scripts/signing_fingerprint.tests.ps1` exercises the pure functions
-  offline with hand-built keytool/apksigner-shaped text -- **could not be
-  executed in this sandbox** (no `pwsh` available, same limitation as the
-  earlier `release_version.ps1` round), verified only by careful manual
-  read-through; needs a real `pwsh` run before being trusted.
+  offline with hand-built keytool/apksigner-shaped text -- `pwsh` was later
+  installed in a follow-up round and the suite runs for real (47/47 passing
+  as of the 2026-07-10 arm64-only round below).
 - `.github/workflows/build.yml`'s release path now reads a new
   **Repository Variable** (not a Secret -- fingerprints aren't sensitive)
   `EXPECTED_SIGNING_CERT_SHA256`, validates its format before doing
@@ -253,12 +252,47 @@ A's), added a certificate-fingerprint pinning layer:
 - Publish a second release with a higher build number and confirm the
   first release's install actually receives and can act on the update
   prompt (validates the full loop, not just the first install).
-- Run `lib/scripts/signing_fingerprint.tests.ps1` somewhere with real
-  `pwsh` -- it was written and manually reviewed but never executed.
+- (done, see below) Run `lib/scripts/signing_fingerprint.tests.ps1` with
+  real `pwsh`.
 
-Do not claim self-update, override-install, or the fingerprint pinning
-has been validated end-to-end until the above is done by a human with
-real GitHub Actions access and a real device.
+**2026-07-10 third follow-up round: apksigner v3/v3.1 output-format fix.**
+The user's first real `v2.0.9+2` release build got through signing but
+failed the post-build "[Release] 校验 APK 签名与证书指纹（apksigner）" step:
+modern `apksigner` reports signers as `Signer (minSdkVersion=X,
+maxSdkVersion=Y) certificate SHA-256 digest: ...` (key-rotation-aware v3.1
+format) rather than always the fixed `Signer #1 ...` line the parser only
+matched -- a parsing bug, not a real certificate mismatch. Fixed in
+`lib/scripts/signing_fingerprint.ps1`: `ConvertFrom-ApksignerCertOutput`
+now matches any `Signer ... certificate SHA-256 digest:` line (still
+correctly excludes `public key SHA-256 digest` and `Source Stamp Signer
+certificate SHA-256 digest` lines), handles CRLF/whitespace/line-wrapped
+digests, dedupes repeats of the same cert across signature schemes, and
+throws on a genuinely ambiguous multi-fingerprint result instead of
+guessing. `Get-ApkCertFingerprint` now captures apksigner's raw output
+lines instead of relying on `Out-String`'s width-dependent wrapping. 15
+new offline tests added (47 total, all passing). No `v2.0.9+2` Release or
+tag was ever created by the failed run, so the retry still targets the
+same tag once the next round below lands.
+
+**2026-07-10 fourth follow-up round: arm64-v8a-only Android CI.** The
+user only maintains a Pixel 10 Pro and doesn't need armeabi-v7a/x86_64
+APKs; building all three ABIs also broke `upload-artifact` for test
+builds (`archive: false` requires exactly one file, but three ABI APKs
+matched the glob). `.github/workflows/build.yml`'s three `flutter build
+apk` invocations (release, dispatch-test, PR) now all pass
+`--target-platform android-arm64` alongside `--split-per-abi`, so every
+Android build path produces exactly one `..._arm64-v8a.apk`. Added an
+explicit post-Rename verification step that fails the workflow loudly if
+zero, more-than-one, or any non-arm64-v8a APK is found. The test-build
+artifact upload and the formal-release asset list both now reference the
+exact single expected filename (`PiliPlus_android[_dev]_<version>_
+arm64-v8a.apk`) instead of a wildcard. `workflow_dispatch` defaults were
+already Android-only (iOS/Mac/Win/Linux default `false`) from an earlier
+round -- verified still true, not re-touched.
+
+Do not claim self-update, override-install, the fingerprint pinning, or
+the arm64-only build has been validated end-to-end until the above is
+done by a human with real GitHub Actions access and a real device.
 
 ### 5. Power/thermal instrumentation (tool finished, needs Pixel 10 Pro measurements)
 
@@ -287,8 +321,9 @@ Android's only distribution channels for SDK platform-tools/build-tools/
 NDK, so the Android SDK could not be installed and `flutter build apk`
 failed at "No Android SDK found". **No APK was produced this round.** The
 repo's `.github/workflows/build.yml` has a `workflow_dispatch`-triggered
-`android` job that builds and uploads arm64/armv7/x86_64 release APKs as
-workflow artifacts and is a more reliable path to an actual APK than a
+`android` job that builds and uploads an arm64-v8a-only release APK (see
+the fourth follow-up round above -- other ABIs were dropped) as a
+workflow artifact and is a more reliable path to an actual APK than a
 sandboxed agent session — it was not triggered this round (running CI has
 externally-visible side effects and needs explicit user go-ahead). Any
 future agent attempting a from-scratch APK build in a similarly-locked-down

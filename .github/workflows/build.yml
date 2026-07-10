@@ -200,17 +200,21 @@ jobs:
                   }
                   Write-Host "Keystore certificate fingerprint matches EXPECTED_SIGNING_CERT_SHA256: $normalizedActual"
 
+            # 本 fork 只维护 Pixel（arm64-v8a），--split-per-abi 搭配单一
+            # --target-platform android-arm64 只会产出一个
+            # app-arm64-v8a-release.apk，不再产出 armeabi-v7a/x86_64/
+            # universal APK。
             - name: Flutter Build - 正式 Release Apk
               if: ${{ env.IS_RELEASE == 'true' }}
-              run: flutter build apk --release --split-per-abi --dart-define-from-file=pili_release.json --pub
+              run: flutter build apk --release --split-per-abi --target-platform android-arm64 --dart-define-from-file=pili_release.json --pub
 
             - name: Flutter Build - workflow_dispatch 测试 Apk（tag 留空）
               if: ${{ env.IS_RELEASE != 'true' && github.event_name == 'workflow_dispatch' }}
-              run: flutter build apk --release --split-per-abi --android-project-arg dev=1 --dart-define-from-file=pili_release.json --pub
+              run: flutter build apk --release --split-per-abi --target-platform android-arm64 --android-project-arg dev=1 --dart-define-from-file=pili_release.json --pub
 
             - name: Flutter Build - PR 编译验证 Apk
               if: ${{ github.event_name == 'pull_request' }}
-              run: flutter build apk --release --split-per-abi --android-project-arg dev=1 --pub
+              run: flutter build apk --release --split-per-abi --target-platform android-arm64 --android-project-arg dev=1 --pub
 
             - name: Rename
               run: |
@@ -223,6 +227,36 @@ jobs:
                     mv "$file" "${prefix}_${{ env.version }}_${abi}.apk"
                   done
               shell: bash
+
+            - name: "校验只生成了一个 arm64-v8a APK"
+              # 本 fork 只支持 Pixel（arm64-v8a）。如果因为 Flutter/Gradle
+              # 配置漂移又生成了 armeabi-v7a、x86_64 或 universal APK，这里
+              # 必须让 workflow 显式失败，而不是把多余的产物悄悄传上去。
+              shell: bash
+              run: |
+                  shopt -s nullglob
+                  apks=(PiliPlus_android_*.apk)
+                  if [ ${#apks[@]} -eq 0 ]; then
+                    echo "::error::no APK found after the Rename step"
+                    exit 1
+                  fi
+                  bad=()
+                  arm64_count=0
+                  for f in "${apks[@]}"; do
+                    case "$f" in
+                      *arm64-v8a*) arm64_count=$((arm64_count + 1)) ;;
+                      *) bad+=("$f") ;;
+                    esac
+                  done
+                  if [ ${#bad[@]} -ne 0 ]; then
+                    echo "::error::unexpected non-arm64-v8a APK(s) produced: ${bad[*]}. This fork only builds arm64-v8a for Pixel; check that --target-platform android-arm64 is still passed to every 'flutter build apk' step."
+                    exit 1
+                  fi
+                  if [ "$arm64_count" -ne 1 ]; then
+                    echo "::error::expected exactly 1 arm64-v8a APK, found $arm64_count: ${apks[*]}"
+                    exit 1
+                  fi
+                  echo "OK: exactly one arm64-v8a APK: ${apks[0]}"
 
             - name: "[Release] 校验 APK 签名与证书指纹（apksigner）"
               # 双重校验：apksigner 本身验证签名有效性 + 每个 APK 的证书
@@ -331,16 +365,19 @@ jobs:
                   prerelease: false
                   fail_on_unmatched_files: true
                   files: |
-                      PiliPlus_android_*.apk
+                      PiliPlus_android_${{ env.version }}_arm64-v8a.apk
                       SHA256SUMS.txt
 
             - name: "[Test build] 上传 Actions artifact（非正式发布，不会被 App 更新检查发现）"
+              # archive: false 要求 path 精确指向单个文件，不能用通配符匹配
+              # 多个文件；现在每次构建只产出一个 arm64-v8a APK，文件名可以
+              # 精确拼出，用户下载后直接拿到 APK，不用先解压 zip。
               if: ${{ env.IS_RELEASE != 'true' }}
               uses: actions/upload-artifact@v7
               with:
                   archive: false
                   name: Android-test-build
-                  path: PiliPlus_android_dev_*.apk
+                  path: PiliPlus_android_dev_${{ env.version }}_arm64-v8a.apk
 
     ios:
         # 本次改动范围限定在 Android（见 4.1）；ios/win_x64 的 PR 触发条件

@@ -300,8 +300,11 @@ apksigner verify --verbose --print-certs ".\PiliPlus.apk"
    ```
 
    - 新 Release（tag 就是你填的那个）已经出现；
-   - Release 里附带 `PiliPlus_android_<版本>_arm64-v8a.apk`
-     （Pixel 10 Pro 用这个）、`..._armeabi-v7a.apk`、`..._x86_64.apk`；
+   - Release 里只附带一个 APK：`PiliPlus_android_<版本>_arm64-v8a.apk`
+     （本 fork 只维护 Pixel 10 Pro，不再构建/发布 `armeabi-v7a`、`x86_64`
+     或通用 APK；如果这一步发现附件里出现了其他 ABI 或不止一个 APK，说明
+     workflow 里 `--target-platform android-arm64` 的限制被破坏了，应视为
+     构建失败处理，不要使用这次 Release）；
    - `SHA256SUMS.txt` 也在附件里；
    - 打开这次 workflow 运行的 "Summary" 页面，确认：
      - "signing" 一栏是 "release keystore"（不是 "dev/debug"）；
@@ -313,9 +316,9 @@ apksigner verify --verbose --print-certs ".\PiliPlus.apk"
 9. 已经安装 fork 版 PiliPlus 的手机，会在下一次自动检查更新时（或用户手动点
    「关于」页的检查更新）看到弹窗提示。
 
-10. 用户点「下载更新」，App 会按手机的 CPU 架构自动打开对应的
-    `arm64-v8a`/`armeabi-v7a`/`x86_64` APK 下载链接（Pixel 10 Pro 对应
-    `arm64-v8a`）；没有精确匹配架构的资产时会退回打开这次 Release 的页面。
+10. 用户点「下载更新」，App 会按手机的 CPU 架构在 Release 资产里找匹配的
+    APK 下载链接（Pixel 10 Pro 对应 `arm64-v8a`，也是现在唯一会发布的
+    架构）；没有精确匹配架构的资产时会退回打开这次 Release 的页面。
 
 11. Android 的安装确认界面由用户自己手动点「安装」/「更新」完成，
     **App 内不会自动下载、不会自动安装**。
@@ -335,6 +338,9 @@ apksigner verify --verbose --print-certs ".\PiliPlus.apk"
 - 测试包用 `.dev` applicationId（`com.example.piliplus.dev`），文件名带
   `PiliPlus_android_dev_` 前缀，与正式包（`com.example.piliplus`）可以同时装在
   同一台设备上，互不冲突、互不覆盖。
+- 测试包和正式包一样，只构建 `arm64-v8a` 一个架构，只产出一个 APK 文件，
+  作为单个文件（不是 zip 压缩包）上传成 Actions artifact，下载后可以直接
+  安装。
 - 测试包目前用 Gradle 默认 debug 签名，不是第 1 节配置的正式 release keystore——
   它和正式发布包是两个完全不同签名的应用，不能互相覆盖安装。
 - 简单说：**Actions artifact ≠ GitHub Release asset**，两者是完全不同的概念，

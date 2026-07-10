@@ -1,5 +1,48 @@
 # Update
 
+## 2026-07-10（第十五轮）
+
+### 简化 Android CI：只构建 arm64-v8a（仅 Pixel 10 Pro）
+
+- 背景：用户只维护自己的 Pixel 10 Pro，不需要 armeabi-v7a、x86_64 或通用
+  APK；最近一次测试构建虽然成功产出了 APK，但因为同时生成了三个 ABI 的
+  APK，`upload-artifact`（`archive: false`，只允许单文件上传）报错
+  `When 'archive' is set to false, only a single file can be uploaded.
+  Found 3 files to upload.`。
+- 修改 `.github/workflows/build.yml`：三处 `flutter build apk`（正式
+  Release、workflow_dispatch 测试构建、PR 编译验证）都加上
+  `--target-platform android-arm64`（配合已有的 `--split-per-abi`），
+  每次构建只产出一个 `app-arm64-v8a-release.apk`，重命名后是
+  `PiliPlus_android[_dev]_<版本>_arm64-v8a.apk`。
+- Rename 步骤之后新增显式校验步骤：确认恰好存在一个 arm64-v8a APK、不存在
+  任何非 arm64-v8a 的 APK；不满足则让 workflow 直接失败并给出清楚的错误
+  信息，而不是把多余的产物悄悄传上去。
+- 测试构建的 `upload-artifact` 步骤：`path` 从通配符 `PiliPlus_android_
+  dev_*.apk` 改成精确的单文件路径 `PiliPlus_android_dev_${{ env.version
+  }}_arm64-v8a.apk`，保留 `archive: false`（用户希望直接拿到 APK 文件，
+  不想先解压 zip）。
+- 正式 Release 的资产列表同样从通配符改成精确文件名
+  `PiliPlus_android_${{ env.version }}_arm64-v8a.apk` + `SHA256SUMS.txt`，
+  不再依赖"反正只会匹配到一个"的隐含假设。
+- 未改动应用内更新器（`lib/utils/update/release_update_logic.dart` 的
+  `pickAndroidApkAsset`）：它本来就是按文件名里的 ABI 字符串匹配资产，
+  Pixel 10 Pro 报告 `arm64-v8a`，文件名里仍然带 `arm64-v8a`，无需改代码。
+- `workflow_dispatch` 的平台开关默认值（Android 开、iOS/Mac/Win/Linux 关）
+  在更早一轮就已经是这样，本轮复核确认无需改动。
+- 确认 `main` 已经包含上一轮（第十四轮）现代 `apksigner` 输出格式兼容
+  修复（`Signer (minSdkVersion=..., maxSdkVersion=...)` 格式），本轮无需
+  再 cherry-pick，直接在这个基础上继续。
+- `lib/scripts/signing_fingerprint.tests.ps1`（47 个测试）、
+  `flutter analyze`、`flutter test`（46 个测试）均通过；`git diff --check`
+  无空白错误。
+- 文档更新：`docs/RELEASE_GUIDE.md`（正式 Release 只有一个 arm64-v8a APK、
+  测试包同理）、`AGENT_HANDOFF.md`（记录本轮改动 + 修正此前"三个 ABI"的
+  过时描述）。
+- 本轮**不得**触发 GitHub Actions、不得创建 Release/tag、不得读取任何
+  Secret、不得跑 ADB——只修改了 workflow 配置和文档，**尚未在真实 GitHub
+  Actions 环境或真机上验证**：下一次真正触发正式 Release 或测试构建时，
+  才能确认 arm64-only 改动在实际 CI 环境里按预期工作。
+
 ## 2026-07-10（第十四轮）
 
 ### 修复 apksigner 证书指纹解析：兼容 v3/v3.1 签名方案的现代输出格式
