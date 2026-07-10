@@ -409,9 +409,10 @@ abstract final class Api {
   // 黑名单
   static const String blackLst = '/x/relation/blacks';
 
-  // github 获取最新版
+  // github 获取最新版（本 fork：指向 ArthurADDDDD/PiliPlus 而非上游，
+  // 需要该仓库实际发布 GitHub Release 后才会返回非空数据）
   static const String latestApp =
-      'https://api.github.com/repos/bggRGjQaUbCoE/PiliPlus/releases';
+      'https://api.github.com/repos/ArthurADDDDD/PiliPlus/releases';
 
   // 多少人在看
   // https://api.bilibili.com/x/player/online/total?aid=913663681&cid=1203559746&bvid=BV1MM4y1s7NZ&ts=56427838

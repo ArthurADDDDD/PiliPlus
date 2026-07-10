@@ -2,6 +2,39 @@
 
 ## 2026-07-10（第十轮）
 
+### 应用内检查更新改为指向本 fork（代码完成，待发布 Release 才生效）
+
+- `lib/utils/update.dart` 的检查更新机制此前硬编码指向上游
+  `bggRGjQaUbCoE/PiliPlus` 的 GitHub Releases API 与源码链接——本 fork
+  用户会被提示"发现新版本"却下载到上游的、applicationId/签名/功能都不同
+  的安装包。已把 `Api.latestApp`（`lib/http/api.dart`）与
+  `Constants.sourceCodeUrl`（`lib/common/constants.dart`）改为指向
+  `ArthurADDDDD/PiliPlus`。
+- 机制本身不变：启动时（`自动检测更新` 开启时）与「关于」页手动检查都会
+  拉取 `GET /repos/ArthurADDDDD/PiliPlus/releases`，用
+  `BuildConfig.buildTime`（构建时 `--dart-define=pili.time=<epoch>` 注入）
+  与最新 Release 的 `created_at` 比较，弹窗内按平台/架构名匹配 Release
+  assets 提供下载。
+- **尚未生效**：通过 GitHub API 确认 `ArthurADDDDD/PiliPlus` 目前**没有
+  任何 GitHub Release**（仓库现在的发布方式是把 APK 直接提交进
+  `release/` 目录，不是 GitHub Release）。检查更新会请求成功但返回空列表，
+  不会报错也不会弹窗提示新版本。要让该功能真正生效，需要：
+  1. 在这个 fork 上发布至少一个 GitHub Release（可以手动创建并上传 APK，
+     也可以用仓库已有的 `.github/workflows/build.yml`
+     的 `workflow_dispatch` 触发，带 `tag` 输入时会自动创建 Release 并
+     上传按 `PiliPlus_android_<version>_<abi>.apk` 命名的 assets——文件名
+     里的架构字符串如 `arm64-v8a` 正是 `onDownload()` 用来匹配的关键字，
+     无需改代码即可工作）。
+  2. 若要正式签名（而非默认 debug 签名）的 Release APK，还需要在这个
+     fork 仓库的 Settings → Secrets 配置 `SIGN_KEYSTORE_BASE64` /
+     `KEYSTORE_PASSWORD` / `KEY_ALIAS` / `KEY_PASSWORD`。
+  3. 之后本地手动构建（未走 CI、未传 `--dart-define=pili.time=...` 等）的
+     APK，`BuildConfig.buildTime` 会是默认值 `0`，检查更新时会一直认为
+     "有新版本"——这属已知的、独立于本次改动的行为，只影响手动构建的包，
+     不影响通过 workflow 构建、正确注入了 `pili.time` 等 define 的包。
+- 本轮未触发任何 GitHub Actions workflow、未创建 Release（这些是有外部
+  可见影响的操作，需要用户另行决定并执行/授权）。
+
 ### 原生 PiP 中媒体重新加载后冻结（代码完成，待真机验证）
 
 - 根因：`AndroidVideoController`（`third_party/media_kit_video`）由本 fork
