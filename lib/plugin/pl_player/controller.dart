@@ -20,6 +20,7 @@ import 'package:PiliPlus/pages/danmaku/danmaku_model.dart';
 import 'package:PiliPlus/pages/setting/models/play_settings.dart'
     show kMaxVolume;
 import 'package:PiliPlus/pages/sponsor_block/block_mixin.dart';
+import 'package:PiliPlus/plugin/pl_player/models/audio_output_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_source.dart';
 import 'package:PiliPlus/plugin/pl_player/models/data_status.dart';
 import 'package:PiliPlus/plugin/pl_player/models/double_tap_type.dart';
@@ -777,7 +778,15 @@ class PlPlayerController with BlockConfigMixin {
     assert(_videoPlayerController == null);
     final opt = {
       'video-sync': Pref.videoSync,
-      if (Platform.isAndroid) 'ao': Pref.audioOutput,
+      // On some (esp. MediaTek) devices, exclusive AAudio output returns bad
+      // timestamps after a seek, stalling the audio clock so the video
+      // scheduler waits forever for frames -> frozen frame with audio still
+      // running. Prefer OpenSL ES (which doesn't depend on HAL timestamps)
+      // and only fall back to AAudio. Mirrors upstream PiliPlus #2434.
+      if (Platform.isAndroid)
+        'ao': Pref.audioOutput == AudioOutput.aaudio.name
+            ? '${AudioOutput.opensles.name},${AudioOutput.aaudio.name}'
+            : Pref.audioOutput,
       'volume':
           (PlatformUtils.isMobile ? Pref.playerVolume : volume.value * 100)
               .toString(),
