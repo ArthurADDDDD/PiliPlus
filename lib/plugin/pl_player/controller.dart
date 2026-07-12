@@ -152,6 +152,23 @@ class PlPlayerController with BlockConfigMixin {
   Timer? _timer;
   StreamSubscription? _subForSeek;
 
+  // ---------------------------------------------------------------------
+  // Auto-recovery for intermittent native-player failures.
+  //
+  // Two long-standing (upstream) bugs manifest as: (1) the video frame
+  // freezes on a single frame for the rest of playback, and (2) the video
+  // opens with no audio at all. In both cases the manual workaround is to
+  // exit the video and re-enter it. [_tryAutoRecover] automates that by
+  // reopening the current media in place (fresh Android surface + re-loaded
+  // DASH audio track). It's capped per media so a genuinely broken stream
+  // can't loop forever.
+  // ---------------------------------------------------------------------
+  static const int _maxAutoRecover = 2;
+  int _autoRecoverCount = 0;
+  Timer? _stallTimer;
+  int _lastPosMs = 0;
+  int _lastPosAdvanceAt = 0;
+
   Box setting = GStorage.setting;
 
   // final Durations durations;
@@ -810,6 +827,9 @@ class PlPlayerController with BlockConfigMixin {
   ) async {
     isBuffering.value = false;
     _heartDuration = 0;
+    _autoRecoverCount = 0;
+    _lastPosMs = 0;
+    _lastPosAdvanceAt = DateTime.now().millisecondsSinceEpoch;
     danmakuController?.clear();
 
     var player = _videoPlayerController;
@@ -897,6 +917,72 @@ class PlPlayerController with BlockConfigMixin {
       );
     }
     return null;
+  }
+
+  /// Reopen the current media in place to recover from an intermittent
+  /// native failure (frozen frame / missing audio) that a manual
+  /// exit-and-re-enter would otherwise fix. Capped per media via
+  /// [_maxAutoRecover] so a permanently-broken stream can't loop. Returns
+  /// whether a recovery was actually kicked off.
+  bool _tryAutoRecover(String reason, {String? toast}) {
+    if (dataSource is FileSource ||
+        _videoPlayerController == null ||
+        _playerCount == 0 ||
+        _autoRecoverCount >= _maxAutoRecover) {
+      return false;
+    }
+    _autoRecoverCount++;
+    if (kDebugMode) {
+      debugPrint('plPlayer auto-recover ($reason) #$_autoRecoverCount');
+    }
+    if (toast != null) {
+      SmartDialog.showToast(
+        toast,
+        displayTime: const Duration(milliseconds: 800),
+      );
+    }
+    // Reset the stall clock so the reopen isn't immediately re-flagged.
+    _lastPosAdvanceAt = DateTime.now().millisecondsSinceEpoch;
+    refreshPlayer();
+    return true;
+  }
+
+  /// Periodic watchdog: if playback is nominally running (playing, not
+  /// buffering, not seeking) yet the position hasn't advanced for a while,
+  /// the native player has hung. Reopen to recover.
+  void _startStallWatchdog() {
+    _stallTimer?.cancel();
+    _stallTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (_instance == null || _videoPlayerController == null) {
+        return;
+      }
+      // Only meaningful for regular VOD playback.
+      if (isLive ||
+          dataSource is FileSource ||
+          dataStatus.value != DataStatus.loaded ||
+          !playerStatus.isPlaying ||
+          isBuffering.value ||
+          isSeeking.value ||
+          onlyPlayAudio.value) {
+        return;
+      }
+      final durMs = durationInMilliseconds;
+      final posMs = positionInMilliseconds;
+      // Ignore the very start and the tail end (near-completion isn't a hang).
+      if (posMs <= 0 || (durMs > 0 && posMs >= durMs - 1500)) {
+        return;
+      }
+      final now = DateTime.now().millisecondsSinceEpoch;
+      if (posMs != _lastPosMs) {
+        _lastPosMs = posMs;
+        _lastPosAdvanceAt = now;
+        return;
+      }
+      // Position frozen while "playing" & not buffering => genuine hang.
+      if (now - _lastPosAdvanceAt >= 10000) {
+        _tryAutoRecover('playback stalled', toast: '播放卡住，重试中');
+      }
+    });
   }
 
   // 开始播放
@@ -987,6 +1073,14 @@ class PlPlayerController with BlockConfigMixin {
       stream.position.listen((Duration position) {
         final posInSeconds = position.inSeconds;
 
+        // Feed the stall watchdog: record whenever playback actually
+        // advances so a frozen position can be told apart from a paused one.
+        final posMs = position.inMilliseconds;
+        if (posMs != _lastPosMs) {
+          _lastPosMs = posMs;
+          _lastPosAdvanceAt = DateTime.now().millisecondsSinceEpoch;
+        }
+
         if (posInSeconds != this.position.value) {
           if (!isSeeking.value) {
             this.position.value = posInSeconds;
@@ -1034,6 +1128,26 @@ class PlPlayerController with BlockConfigMixin {
           }
           return;
         }
+        // The DASH audio track is loaded as an mpv external file
+        // ("audio-files"). When only *that* fails to open, the video still
+        // buffers and plays fine, so the buffering guard below never fires
+        // and playback continues silently with no sound. Reopen to
+        // re-attempt the audio track. (In audio-only mode the audio is the
+        // main file and would fail as "Failed to open https://" instead.)
+        if (!onlyPlayAudio.value &&
+            dataSource.audioSource?.isNotEmpty == true &&
+            event.startsWith("Can not open external file https://")) {
+          EasyThrottle.throttle(
+            'controllerStream.error.audio',
+            const Duration(milliseconds: 10000),
+            () {
+              Future.delayed(const Duration(milliseconds: 2000), () {
+                _tryAutoRecover('audio-file open failed', toast: '音频加载失败，重试中');
+              });
+            },
+          );
+          return;
+        }
         if (event.startsWith("Failed to open https://") ||
             event.startsWith("Can not open external file https://") ||
             //tcp: ffurl_read returned 0xdfb9b0bb
@@ -1074,10 +1188,14 @@ class PlPlayerController with BlockConfigMixin {
         }
       }),
     ];
+
+    _startStallWatchdog();
   }
 
   /// 移除事件监听
   void _removeListeners() {
+    _stallTimer?.cancel();
+    _stallTimer = null;
     _subscriptions?.forEach((e) => e.cancel());
     _subscriptions?.clear();
     _subscriptions = null;
