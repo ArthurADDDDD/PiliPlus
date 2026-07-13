@@ -249,6 +249,20 @@ class VideoPlayerServiceHandler extends BaseAudioHandler with SeekHandler {
     if (!PlPlayerController.instanceExists()) return;
     _item.add(mediaItem);
     setMediaItem(mediaItem);
+    // Reconcile the play/pause control now that a media item exists. The
+    // player often starts playing (autoplay) before this handler receives a
+    // media item — that earlier `playing` stream event was dropped by
+    // setPlaybackState's `_item.isEmpty` guard, and since the state doesn't
+    // change again during steady playback, the notification / PiP toggle
+    // stays stuck showing "play" while the video is actually playing. Push
+    // the live player state here so the button matches reality.
+    if (PlPlayerController.instance case final ctr?) {
+      setPlaybackState(
+        ctr.playerStatus.value,
+        ctr.isBuffering.value,
+        ctr.isLive,
+      );
+    }
   }
 
   void onVideoDetailDispose(String herotag) {
