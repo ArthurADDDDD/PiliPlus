@@ -38,8 +38,15 @@ enum HwDecType {
   final String desc;
   const HwDecType(this.hwdec, this.desc);
 
+  // Default to the copy-back MediaCodec path rather than direct
+  // (surface) MediaCodec: the direct decoder pushes frames straight to the
+  // Android surface, whose classic failure mode is a frozen video frame
+  // (audio keeps playing) that only exiting & re-entering clears.
+  // mediacodec-copy routes frames through mpv's own GPU pipeline, avoiding
+  // that surface freeze at a small power cost. Users can still pick direct
+  // mediacodec in settings.
   static final String androidDefault = [
-    HwDecType.mediacodec.hwdec,
+    HwDecType.mediacodecCopy.hwdec,
     HwDecType.autoSafe.hwdec,
   ].join(',');
 }
